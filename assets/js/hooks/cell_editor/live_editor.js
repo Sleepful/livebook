@@ -573,7 +573,7 @@ class LiveEditor {
         {
           if(success){
             const successDecoration = {
-              // replace with monaco decoration object
+              // TODO: replace with monaco decoration object
             }
             return successDecoration
           }
