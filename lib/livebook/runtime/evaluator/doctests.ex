@@ -305,13 +305,18 @@ defmodule Livebook.Runtime.Evaluator.Doctests do
   defp pluralize(1, singular, _plural), do: singular
   defp pluralize(_, _singular, plural), do: plural
 
-  defp put_output(output) do
+  defp put_output({_type, _val} = output) do
     gl = Process.group_leader()
     ref = make_ref()
 
     send(gl, {:io_request, self(), ref, {:livebook_put_output, output}})
 
-    # send(gl, {:io_request, self(), ref, {:livebook_put_doctest, output}})
+    # case _type do
+    #   :doctest_result ->
+    #     send(gl, {:io_request, self(), ref, {:livebook_put_doctest, output}})
+    #   _ ->
+    #     send(gl, {:io_request, self(), ref, {:livebook_put_output, output}})
+    # end
 
 
     receive do
