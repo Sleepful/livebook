@@ -1244,6 +1244,11 @@ defmodule Livebook.Session do
     {:noreply, handle_operation(state, operation)}
   end
 
+  # def handle_info({:runtime_doctest_output, cell_id, output}, state) do
+  #   operation = {:add_cell_doctest, @client_id, cell_id, output}
+  #   {:noreply, handle_operation(state, operation)}
+  # end
+
   def handle_info({:runtime_evaluation_output_to, client_id, cell_id, output}, state) do
     client_pid =
       Enum.find_value(state.client_pids_with_id, fn {pid, id} ->
@@ -1643,13 +1648,18 @@ defmodule Livebook.Session do
   #     to reflect the new `Livebook.Session.Data`
   #
   defp handle_operation(state, operation) do
+    # I am under hte assumption that in some place inside
+    # this method the operations get sent to session_live.ex,
+    # is this correct? If so, which code is in charge of doing so?
     broadcast_operation(state.session_id, operation)
+    # cell evaluation comes thru here
 
     case Data.apply_operation(state.data, operation) do
       {:ok, new_data, actions} ->
         %{state | data: new_data}
-        |> after_operation(state, operation)
-        |> handle_actions(actions)
+        |> after_operation(state, operation) # notify update to sessions, notifies updated session
+        |> handle_actions(actions) # actions are the side-effects like evaluation
+        # one of these actions should push_event maybe?
 
       :error ->
         state

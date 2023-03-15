@@ -17,6 +17,11 @@ defmodule Livebook.Runtime.Evaluator.Doctests do
     case define_test_module(modules) do
       {:ok, test_module} ->
         if test_module.tests != [] do
+        # grab doctests line numbers from:
+        # get_in(test_module.tests,
+        #        Access.all(),
+        #        tags,
+        #        :doctest_line)
           tests =
             test_module.tests
             |> Enum.sort_by(& &1.tags.doctest_line)
@@ -24,6 +29,7 @@ defmodule Livebook.Runtime.Evaluator.Doctests do
 
           formatted = format_results(tests)
           put_output({:text, formatted})
+          # put_output({:doctest_results, doctest_results})
         end
 
         delete_test_module(test_module)
@@ -295,6 +301,9 @@ defmodule Livebook.Runtime.Evaluator.Doctests do
     ref = make_ref()
 
     send(gl, {:io_request, self(), ref, {:livebook_put_output, output}})
+
+    # send(gl, {:io_request, self(), ref, {:livebook_put_doctest, output}})
+
 
     receive do
       {:io_reply, ^ref, reply} -> {:ok, reply}

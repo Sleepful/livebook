@@ -566,6 +566,35 @@ class LiveEditor {
       );
     });
   }
+
+  addDoctestDecoration(decorations){
+    const collectionItems = decorations.map(
+      ({[ lineNumber, success ]}) =>
+        {
+          if(success){
+            const successDecoration = {
+              // replace with monaco decoration object
+            }
+            return successDecoration
+          }
+          else {
+            const failureDecoration = {}
+            return failureDecoration
+          }
+        }
+    )
+    this.editorDoctestDecorations = this.editor.createDecorationsCollection(collectionItems)
+    this.editorDoctestDecorations.onDidChange(() =>{
+      // TODO:
+      // check all decorations, if any of them spans multiple lines then remove it
+      // necessary due to funny behavior where a decoration might span multiple
+      // lines if the user hits <RETURN> on the line with the decoration.
+    })
+  }
+
+  clearDoctestDecorations(){
+    this.editorDoctestDecorations.clear()
+  }
 }
 
 function completionItemsToSuggestions(items, settings) {

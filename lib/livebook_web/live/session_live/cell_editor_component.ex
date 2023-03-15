@@ -44,6 +44,7 @@ defmodule LivebookWeb.SessionLive.CellEditorComponent do
       phx-hook="CellEditor"
       data-cell-id={@cell_id}
       data-tag={@tag}
+      data-doctest-results={[]}
     >
       <div class={["py-3 bg-editor", rounded_class(@rounded)]} data-el-editor-container>
         <div class="px-8" data-el-skeleton>

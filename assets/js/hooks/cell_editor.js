@@ -34,6 +34,19 @@ const CellEditor = {
           skeletonEl && skeletonEl.remove();
         });
 
+        /*
+
+        new MutationObserver((event) => {
+
+          this.liveEditor.clearDoctestDecorations()
+          const attribute = this.getAttribute("data-doctest-results")
+          const doctestResults = JSON.parse(attribute)
+          this.liveEditor.addDoctestDecorations(doctestResults)
+        }).observe(this,
+           {attributes: true,
+           attributeFilter: [ "data-doctest-results"]})
+
+         */
         this.el.dispatchEvent(
           new CustomEvent("lb:cell:editor_created", {
             detail: { tag: this.props.tag, liveEditor: this.liveEditor },

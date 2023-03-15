@@ -66,7 +66,7 @@ defmodule Livebook.Runtime.Evaluator do
   # would take too much memory
   @evaluator_info_key :evaluator_info
 
-  # We stor the path in process dictionary, so that the tracer can access it
+  # We store the path in process dictionary, so that the tracer can access it
   @ebin_path_key :ebin_path
 
   @doc """

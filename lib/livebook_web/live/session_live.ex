@@ -2162,6 +2162,14 @@ defmodule LivebookWeb.SessionLive do
       {:update_smart_cell, _client_id, _cell_id, _cell_state, _delta, _chunks, _reevaluate} ->
         update_dirty_status(data_view, data)
 
+      # {:add_cell_doctest, }
+      # similar to :add_cell_evaluation_output but instead
+      # this will add the information of doctests that
+      # pass or fail and their line number
+      # to the CellEditor attributes, then the CellEditor
+      # will react to it through a MutationObserver to
+      # apply the styling into the Monaco editor
+
       # For outputs that update existing outputs we send the update directly
       # to the corresponding component, so the DOM patch is isolated and fast.
       # This is important for intensive output updates

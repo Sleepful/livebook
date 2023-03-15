@@ -245,6 +245,12 @@ defmodule Livebook.Runtime.Evaluator.IOProxy do
     {:ok, state}
   end
 
+  # defp io_request({:livebook_put_doctest, output}, state) do
+  #   state = flush_buffer(state)
+  #   send(state.send_to, {:runtime_doctest_output, state.ref, output})
+  #   {:ok, state}
+  # end
+
   defp io_request({:livebook_put_output_to, client_id, output}, state) do
     state = flush_buffer(state)
     send(state.send_to, {:runtime_evaluation_output_to, client_id, state.ref, output})
