@@ -11,7 +11,7 @@ defmodule LivebookWeb.EnvVarComponent do
         do: {assigns.env_var, :edit},
         else: {%EnvVar{}, :new}
 
-    changeset = EnvVar.changeset(env_var)
+    changeset = Settings.change_env_var(env_var)
 
     {:ok,
      socket
@@ -45,6 +45,7 @@ defmodule LivebookWeb.EnvVarComponent do
             field={f[:name]}
             label="Name (alphanumeric and underscore)"
             autofocus={@operation == :new}
+            class="uppercase"
           />
           <.text_field field={f[:value]} label="Value" autofocus={@operation == :edit} />
           <.hidden_field field={f[:operation]} value={@operation} />
@@ -69,6 +70,11 @@ defmodule LivebookWeb.EnvVarComponent do
 
   @impl true
   def handle_event("validate", %{"env_var" => attrs}, socket) do
-    {:noreply, assign(socket, changeset: Settings.change_env_var(socket.assigns.env_var, attrs))}
+    changeset =
+      socket.assigns.env_var
+      |> Settings.change_env_var(attrs)
+      |> Map.put(:action, :validate)
+
+    {:noreply, assign(socket, changeset: changeset)}
   end
 end

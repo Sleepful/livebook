@@ -1,7 +1,7 @@
 defmodule LivebookWeb.SettingsLive do
   use LivebookWeb, :live_view
 
-  alias LivebookWeb.{LayoutHelpers, LayoutHelpers}
+  alias LivebookWeb.LayoutHelpers
 
   on_mount LivebookWeb.SidebarHook
 
@@ -106,7 +106,7 @@ defmodule LivebookWeb.SettingsLive do
               File systems
             </h2>
             <p class="mt-4 text-gray-700">
-              File systems are used to store notebooks. The local disk filesystem
+              File systems are used to store notebooks. The local disk file system
               is visible only to the current machine, but alternative file systems
               are available, such as S3-based storages.
             </p>
@@ -166,11 +166,7 @@ defmodule LivebookWeb.SettingsLive do
                 value={false}
               />
               <.switch_field name="editor_font_size" label="Increase font size" value={false} />
-              <.switch_field
-                name="editor_high_contrast"
-                label="Use high contrast theme"
-                value={false}
-              />
+              <.switch_field name="editor_light_theme" label="Use light theme" value={false} />
               <.switch_field
                 name="editor_markdown_word_wrap"
                 label="Wrap words in Markdown"
@@ -186,7 +182,7 @@ defmodule LivebookWeb.SettingsLive do
       :if={@live_action == :add_file_system}
       id="add-file-system-modal"
       show
-      class="w-full max-w-3xl"
+      width={:medium}
       patch={~p"/settings"}
     >
       <.live_component
@@ -200,7 +196,7 @@ defmodule LivebookWeb.SettingsLive do
       :if={@live_action in [:add_env_var, :edit_env_var]}
       id="env-var-modal"
       show
-      class="w-full max-w-3xl"
+      width={:medium}
       patch={~p"/settings"}
     >
       <.live_component
@@ -227,6 +223,7 @@ defmodule LivebookWeb.SettingsLive do
         running_files={[]}
         submit_event={:set_autosave_path}
         file_system_select_disabled={true}
+        target={self()}
       >
         <button class="button-base button-gray" phx-click="cancel_autosave_path" tabindex="-1">
           Cancel

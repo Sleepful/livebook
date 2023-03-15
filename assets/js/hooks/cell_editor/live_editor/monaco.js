@@ -1,9 +1,11 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import { CommandsRegistry } from "monaco-editor/esm/vs/platform/commands/common/commands";
 import ElixirOnTypeFormattingEditProvider from "./elixir/on_type_formatting_edit_provider";
-import { theme, highContrast } from "./theme";
+import { theme, lightTheme } from "./theme";
 
 import { PieceTreeTextBufferBuilder } from "monaco-editor/esm/vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBufferBuilder";
+
+import { settingsStore } from "../../../lib/settings";
 
 // Force LF for line ending.
 //
@@ -54,7 +56,7 @@ monaco.languages.registerOnTypeFormattingEditProvider(
 
 // Define custom theme
 monaco.editor.defineTheme("default", theme);
-monaco.editor.defineTheme("highContrast", highContrast);
+monaco.editor.defineTheme("light", lightTheme);
 
 // See https://github.com/microsoft/monaco-editor/issues/648#issuecomment-564978560
 // Without this selecting text with whitespace shrinks the whitespace.
@@ -83,14 +85,29 @@ document.fonts.addEventListener("loadingdone", (event) => {
  * See cell/live_editor.js for more details.
  */
 
-monaco.languages.registerCompletionItemProvider("elixir", {
-  provideCompletionItems: (model, position, context, token) => {
-    if (model.__getCompletionItems__) {
-      return model.__getCompletionItems__(model, position);
-    } else {
-      return null;
+let completionItemProvider = null;
+
+settingsStore.getAndSubscribe((settings) => {
+  // We replace the completion provider to always reflect the settings
+  if (completionItemProvider) {
+    completionItemProvider.dispose();
+  }
+
+  completionItemProvider = monaco.languages.registerCompletionItemProvider(
+    "elixir",
+    {
+      // Trigger characters always open the popup, so we add dot only
+      // when completion while typing is enabled
+      triggerCharacters: settings.editor_auto_completion ? ["."] : [],
+      provideCompletionItems: (model, position, context, token) => {
+        if (model.__getCompletionItems__) {
+          return model.__getCompletionItems__(model, position);
+        } else {
+          return null;
+        }
+      },
     }
-  },
+  );
 });
 
 monaco.languages.registerHoverProvider("elixir", {
@@ -132,6 +149,20 @@ export default monaco;
  * Returns a promise resolving to HTML that renders as the highlighted code.
  */
 export function highlight(code, language) {
+  // Currently monaco.editor.colorize doesn't support passing theme
+  // directly and uses the theme from last editor initialization, so
+  // we need to make sure there was at least one editor initialization
+  // with the configured theme.
+  //
+  // Tracked in https://github.com/microsoft/monaco-editor/issues/3302
+  if (!highlight.initialized) {
+    const settings = settingsStore.get();
+    monaco.editor.create(document.createElement("div"), {
+      theme: settings.editor_theme,
+    });
+    highlight.initialized = true;
+  }
+
   return monaco.editor.colorize(code, language).then((result) => {
     // `colorize` always adds additional newline, so we remove it
     return result.replace(/<br\/>$/, "");

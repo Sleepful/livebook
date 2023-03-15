@@ -5,7 +5,7 @@ defmodule Livebook.Application do
 
   def start(_type, _args) do
     ensure_directories!()
-    set_local_filesystem!()
+    set_local_file_system!()
     ensure_distribution!()
     validate_hostname_resolution!()
     set_cookie()
@@ -19,11 +19,13 @@ defmodule Livebook.Application do
         # Start a supervisor for Livebook tasks
         {Task.Supervisor, name: Livebook.TaskSupervisor},
         # Start the storage module
-        Livebook.Storage.current(),
+        Livebook.Storage,
         # Start the periodic version check
         Livebook.UpdateCheck,
         # Periodic measurement of system resources
         Livebook.SystemResources,
+        # Start the notebook manager server
+        Livebook.NotebookManager,
         # Start the tracker server on this node
         {Livebook.Tracker, pubsub_server: Livebook.PubSub},
         # Start the supervisor dynamically managing sessions
@@ -50,11 +52,12 @@ defmodule Livebook.Application do
 
     case Supervisor.start_link(children, opts) do
       {:ok, _} = result ->
+        Livebook.Migration.migrate()
         load_lb_env_vars()
         clear_env_vars()
         display_startup_info()
-        insert_personal_hub()
         Livebook.Hubs.connect_hubs()
+        deploy_apps()
         result
 
       {:error, error} ->
@@ -74,13 +77,13 @@ defmodule Livebook.Application do
     File.mkdir_p!(Livebook.Config.data_path())
   end
 
-  defp set_local_filesystem!() do
+  defp set_local_file_system!() do
     home =
       Livebook.Config.home()
       |> Livebook.FileSystem.Utils.ensure_dir_path()
 
-    local_filesystem = Livebook.FileSystem.Local.new(default_path: home)
-    :persistent_term.put(:livebook_local_filesystem, local_filesystem)
+    local_file_system = Livebook.FileSystem.Local.new(default_path: home)
+    :persistent_term.put(:livebook_local_file_system, local_file_system)
   end
 
   defp ensure_distribution!() do
@@ -187,14 +190,21 @@ defmodule Livebook.Application do
     secrets =
       for {"LB_" <> name = var, value} <- System.get_env() do
         System.delete_env(var)
-        %Livebook.Secrets.Secret{name: name, value: value, origin: :startup}
+
+        %Livebook.Secrets.Secret{
+          name: name,
+          value: value,
+          hub_id: nil,
+          readonly: true
+        }
       end
 
-    Livebook.Secrets.set_temporary_secrets(secrets)
+    Livebook.Secrets.set_startup_secrets(secrets)
   end
 
   defp config_env_var?("LIVEBOOK_" <> _), do: true
   defp config_env_var?("RELEASE_" <> _), do: true
+  defp config_env_var?("MIX_ENV"), do: true
   defp config_env_var?(_), do: false
 
   if Mix.target() == :app do
@@ -203,13 +213,9 @@ defmodule Livebook.Application do
     defp app_specs, do: []
   end
 
-  defp insert_personal_hub do
-    unless Livebook.Hubs.hub_exists?("personal-hub") do
-      Livebook.Hubs.save_hub(%Livebook.Hubs.Personal{
-        id: "personal-hub",
-        hub_name: "My Hub",
-        hub_emoji: "🏠"
-      })
+  defp deploy_apps() do
+    if apps_path = Livebook.Config.apps_path() do
+      Livebook.Apps.deploy_apps_in_dir(apps_path, password: Livebook.Config.apps_path_password())
     end
   end
 

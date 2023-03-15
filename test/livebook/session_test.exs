@@ -6,6 +6,7 @@ defmodule Livebook.SessionTest do
   alias Livebook.{Session, Delta, Runtime, Utils, Notebook, FileSystem}
   alias Livebook.Notebook.{Section, Cell}
   alias Livebook.Session.Data
+  alias Livebook.NotebookManager
 
   @eval_meta %{
     errored: false,
@@ -197,6 +198,35 @@ defmodule Livebook.SessionTest do
                       {:insert_cell, _client_id, ^section_id, 1, :code, _id,
                        %{source: "chunk 2", outputs: [{1, {:text, "Hello"}}]}}}
     end
+
+    test "doesn't garbage collect input values" do
+      input = %{
+        ref: :input_ref,
+        id: "input1",
+        type: :text,
+        label: "Name",
+        default: "hey",
+        destination: :noop
+      }
+
+      smart_cell = %{
+        Notebook.Cell.new(:smart)
+        | kind: "text",
+          source: "content",
+          outputs: [{1, {:input, input}}]
+      }
+
+      section = %{Notebook.Section.new() | cells: [smart_cell]}
+      notebook = %{Notebook.new() | sections: [section]}
+
+      session = start_session(notebook: notebook)
+
+      Session.subscribe(session.id)
+
+      Session.convert_smart_cell(session.pid, smart_cell.id)
+
+      assert %{input_values: %{"input1" => "hey"}} = Session.get_data(session.pid)
+    end
   end
 
   describe "add_dependencies/2" do
@@ -280,6 +310,20 @@ defmodule Livebook.SessionTest do
       Session.set_notebook_name(session.pid, "Cat's guide to life")
       assert_receive {:operation, {:set_notebook_name, _client_id, "Cat's guide to life"}}
     end
+
+    @tag :tmp_dir
+    test "updates name information in recent notebooks", %{session: session, tmp_dir: tmp_dir} do
+      tmp_dir = FileSystem.File.local(tmp_dir <> "/")
+      file = FileSystem.File.resolve(tmp_dir, "my_notebook.livemd")
+      Session.set_file(session.pid, file)
+
+      Session.set_notebook_name(session.pid, "New notebook name")
+
+      wait_for_session_update(session.pid)
+
+      assert %{name: "New notebook name"} =
+               NotebookManager.recent_notebooks() |> Enum.find(&(&1.file == file))
+    end
   end
 
   describe "set_section_name/3" do
@@ -306,6 +350,10 @@ defmodule Livebook.SessionTest do
 
       assert_receive {:operation,
                       {:apply_cell_delta, _client_id, ^cell_id, :primary, ^delta, ^revision}}
+
+      # Sends new digest to clients
+      digest = :erlang.md5("cats")
+      assert_receive {:hydrate_cell_source_digest, ^cell_id, :primary, ^digest}
     end
   end
 
@@ -432,6 +480,17 @@ defmodule Livebook.SessionTest do
 
       assert {:ok, true} =
                FileSystem.File.exists?(FileSystem.File.resolve(new_images_dir, "test.jpg"))
+    end
+
+    @tag :tmp_dir
+    test "adds the new file to recent notebooks", %{session: session, tmp_dir: tmp_dir} do
+      tmp_dir = FileSystem.File.local(tmp_dir <> "/")
+      file = FileSystem.File.resolve(tmp_dir, "notebook.livemd")
+      Session.set_file(session.pid, file)
+
+      wait_for_session_update(session.pid)
+
+      assert NotebookManager.recent_notebooks() |> Enum.any?(&(&1.file == file))
     end
   end
 
@@ -646,6 +705,16 @@ defmodule Livebook.SessionTest do
 
       assert FileSystem.File.resolve(images_dir, "image.jpg") |> FileSystem.File.read() ==
                {:ok, "binary content"}
+    end
+
+    @tag :tmp_dir
+    test "adds file to recent notebooks when :file option is specified", %{tmp_dir: tmp_dir} do
+      tmp_dir = FileSystem.File.local(tmp_dir <> "/")
+      file = FileSystem.File.resolve(tmp_dir, "my_notebook.livemd")
+
+      start_session(file: file)
+
+      assert NotebookManager.recent_notebooks() |> Enum.any?(&(&1.file == file))
     end
   end
 
@@ -910,9 +979,10 @@ defmodule Livebook.SessionTest do
 
       send(session_pid, {:pong, metadata, %{ref: "ref"}})
 
+      # Sends new digest to clients
       cell_id = smart_cell.id
       new_digest = :erlang.md5("2")
-      assert_receive {:operation, {:evaluation_started, "__server__", ^cell_id, ^new_digest}}
+      assert_receive {:hydrate_cell_source_digest, ^cell_id, :primary, ^new_digest}
     end
   end
 
@@ -1086,7 +1156,7 @@ defmodule Livebook.SessionTest do
 
       assert {:ok, %{id: ^app2_session_id}} = Livebook.Apps.fetch_session_by_slug(slug)
 
-      Session.app_shutdown(app2_session_pid)
+      Session.app_unregistered(app2_session_pid)
     end
 
     test "recovers on failure", %{test: test} do
@@ -1122,7 +1192,7 @@ defmodule Livebook.SessionTest do
       assert_receive {:operation, {:set_app_status, _, ^app_session_id, :booting}}
       assert_receive {:operation, {:set_app_status, _, ^app_session_id, :running}}
 
-      Session.app_shutdown(app_session_pid)
+      Session.app_unregistered(app_session_pid)
     end
   end
 

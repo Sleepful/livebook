@@ -1,20 +1,68 @@
 defmodule LivebookWeb.Hub.NewLive do
   use LivebookWeb, :live_view
 
-  alias LivebookWeb.{LayoutHelpers, LayoutHelpers}
+  alias LivebookWeb.LayoutHelpers
   alias Phoenix.LiveView.JS
 
   on_mount LivebookWeb.SidebarHook
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, selected_type: nil, page_title: "Livebook - Hub")}
+    enabled? = Livebook.Config.feature_flag_enabled?(:create_hub)
+    {:ok, assign(socket, selected_type: nil, page_title: "Livebook - Hub", enabled?: enabled?)}
   end
 
   @impl true
   def handle_params(_params, _url, socket), do: {:noreply, socket}
 
   @impl true
+  def render(%{enabled?: false} = assigns) do
+    ~H"""
+    <LayoutHelpers.layout current_page="/hub" current_user={@current_user} saved_hubs={@saved_hubs}>
+      <div class="p-4 md:px-12 md:py-7 max-w-screen-md mx-auto space-y-6">
+        <div>
+          <LayoutHelpers.title text="Hubs are coming soon!" />
+          <p class="mt-4 text-gray-700">
+            Deploy applications, share secrets, templates, and more with Livebook Hubs.
+          </p>
+        </div>
+        <p class="text-gray-700">
+          Each Livebook user has their own personal Hub and soon they will be able to deploy
+          their personal notebooks to
+          <a
+            class="font-medium underline text-gray-900 hover:no-underline"
+            href="https://fly.io/"
+            target="_blank"
+          >
+            Fly.io
+          </a>
+          and <a
+            class="font-medium underline text-gray-900 hover:no-underline"
+            href="https://huggingface.co/"
+            target="_blank"
+          >Hugging Face</a>.
+        </p>
+        <p class="text-gray-700">
+          We are also working on <span class="font-bold">Livebook Teams</span>, which were
+          designed from the ground up to deploy notebooks within your organization.
+          <span class="font-bold">Livebook Teams</span>
+          runs on your own infrastructure
+          to provide essential features for secure collaboration between team members,
+          such as digital signing of notebooks, safe sharing of secrets, and more.
+          To learn more, <a
+            class="font-medium underline text-gray-900 hover:no-underline"
+            href="https://docs.google.com/forms/d/e/1FAIpQLScDfvUqT4f_s95dqNGyoXwVMD_Vl059jT6r5MPgXB99XVMCuw/viewform?usp=sf_link"
+            target="_blank"
+          >get in touch</a>!
+        </p>
+        <p class="text-gray-700">
+          - The Livebook crew
+        </p>
+      </div>
+    </LayoutHelpers.layout>
+    """
+  end
+
   def render(assigns) do
     ~H"""
     <LayoutHelpers.layout current_page="/hub" current_user={@current_user} saved_hubs={@saved_hubs}>
@@ -41,13 +89,9 @@ defmodule LivebookWeb.Hub.NewLive do
               </:headline>
             </.card_item>
 
-            <.card_item id="enterprise" selected={@selected_type} title="Livebook Enterprise">
+            <.card_item id="enterprise" selected={@selected_type} title="Livebook Teams">
               <:logo>
-                <img
-                  src="/images/enterprise.png"
-                  class="max-h-full max-w-[75%]"
-                  alt="Livebook Enterprise logo"
-                />
+                <img src="/images/teams.png" class="max-h-full max-w-[75%]" alt="Livebook Teams logo" />
               </:logo>
               <:headline>
                 Control access, manage secrets, and deploy notebooks within your team.
@@ -82,13 +126,19 @@ defmodule LivebookWeb.Hub.NewLive do
     ~H"""
     <div
       id={@id}
-      class={["flex card-item flex-col", card_item_bg_color(@id, @selected)]}
+      class="flex flex-col cursor-pointer"
       phx-click={JS.push("select_type", value: %{value: @id})}
     >
-      <div class="flex items-center justify-center card-item-logo p-6 border-2 rounded-t-2xl h-[150px]">
+      <div class={[
+        "flex items-center justify-center p-6 border-2 rounded-t-2xl h-[150px]",
+        if(@id == @selected, do: "border-gray-200", else: "border-gray-100")
+      ]}>
         <%= render_slot(@logo) %>
       </div>
-      <div class="card-item-body px-6 py-4 rounded-b-2xl grow">
+      <div class={[
+        "px-6 py-4 rounded-b-2xl grow",
+        if(@id == @selected, do: "bg-gray-200", else: "bg-gray-100")
+      ]}>
         <p class="text-gray-800 font-semibold cursor-pointer">
           <%= @title %>
         </p>
@@ -100,9 +150,6 @@ defmodule LivebookWeb.Hub.NewLive do
     </div>
     """
   end
-
-  defp card_item_bg_color(id, selected) when id == selected, do: "selected"
-  defp card_item_bg_color(_id, _selected), do: ""
 
   @impl true
   def handle_event("select_type", %{"value" => service}, socket) do

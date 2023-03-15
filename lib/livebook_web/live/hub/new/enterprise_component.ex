@@ -117,13 +117,12 @@ defmodule LivebookWeb.Hub.New.EnterpriseComponent do
          |> push_patch(to: ~p"/hub")}
 
       :hub_connected ->
-        session_request =
-          LivebookProto.SessionRequest.new!(app_version: Livebook.Config.app_version())
+        data = LivebookProto.build_handshake_request(app_version: Livebook.Config.app_version())
 
-        case EnterpriseClient.send_request(pid, session_request) do
-          {:session, session_response} ->
-            base = %{base | external_id: session_response.id}
-            changeset = Enterprise.change_hub(base)
+        case EnterpriseClient.send_request(pid, data) do
+          {:handshake, handshake_response} ->
+            base = %{base | external_id: handshake_response.id}
+            changeset = Enterprise.validate_hub(base)
 
             {:noreply, assign(socket, pid: pid, changeset: changeset, base: base)}
 
@@ -160,6 +159,6 @@ defmodule LivebookWeb.Hub.New.EnterpriseComponent do
   end
 
   def handle_event("validate", %{"enterprise" => attrs}, socket) do
-    {:noreply, assign(socket, changeset: Enterprise.change_hub(socket.assigns.base, attrs))}
+    {:noreply, assign(socket, changeset: Enterprise.validate_hub(socket.assigns.base, attrs))}
   end
 end

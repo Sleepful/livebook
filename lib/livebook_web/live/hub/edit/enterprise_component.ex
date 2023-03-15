@@ -2,6 +2,7 @@ defmodule LivebookWeb.Hub.Edit.EnterpriseComponent do
   use LivebookWeb, :live_component
 
   alias Livebook.Hubs.Enterprise
+  alias LivebookWeb.LayoutHelpers
 
   @impl true
   def update(assigns, socket) do
@@ -16,7 +17,26 @@ defmodule LivebookWeb.Hub.Edit.EnterpriseComponent do
   @impl true
   def render(assigns) do
     ~H"""
-    <div id={"#{@id}-component"}>
+    <div id={"#{@id}-component"} class="space-y-8">
+      <div class="flex relative">
+        <LayoutHelpers.title text={"#{@hub.hub_emoji} #{@hub.hub_name}"} />
+
+        <button
+          phx-click={
+            with_confirm(
+              JS.push("delete_hub", value: %{id: @hub.id}),
+              title: "Delete hub",
+              description: "Are you sure you want to delete this hub?",
+              confirm_text: "Delete",
+              confirm_icon: "close-circle-line"
+            )
+          }
+          class="absolute right-0 button-base button-red"
+        >
+          Delete hub
+        </button>
+      </div>
+
       <div class="flex flex-col space-y-10">
         <div class="flex flex-col space-y-2">
           <h2 class="text-xl text-gray-800 font-medium pb-2 border-b border-gray-200">
@@ -31,7 +51,6 @@ defmodule LivebookWeb.Hub.Edit.EnterpriseComponent do
             phx-submit="save"
             phx-change="validate"
             phx-target={@myself}
-            phx-debounce="blur"
           >
             <div class="grid grid-cols-1 md:grid-cols-1 gap-3">
               <.emoji_field field={f[:hub_emoji]} label="Emoji" />
@@ -68,6 +87,6 @@ defmodule LivebookWeb.Hub.Edit.EnterpriseComponent do
   end
 
   def handle_event("validate", %{"enterprise" => attrs}, socket) do
-    {:noreply, assign(socket, changeset: Enterprise.change_hub(socket.assigns.hub, attrs))}
+    {:noreply, assign(socket, changeset: Enterprise.validate_hub(socket.assigns.hub, attrs))}
   end
 end

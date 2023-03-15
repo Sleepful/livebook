@@ -55,13 +55,15 @@ defmodule Livebook.Session do
     :mode,
     :images_dir,
     :created_at,
-    :memory_usage
+    :memory_usage,
+    :app_info
   ]
 
   use GenServer, restart: :temporary
 
   import Livebook.Notebook.Cell, only: [is_file_input_value: 1]
 
+  alias Livebook.NotebookManager
   alias Livebook.Session.{Data, FileGuard}
   alias Livebook.{Utils, Notebook, Delta, Runtime, LiveMarkdown, FileSystem}
   alias Livebook.Users.User
@@ -81,7 +83,8 @@ defmodule Livebook.Session do
           mode: Data.session_mode(),
           images_dir: FileSystem.File.t(),
           created_at: DateTime.t(),
-          memory_usage: memory_usage()
+          memory_usage: memory_usage(),
+          app_info: app_info() | nil
         }
 
   @type state :: %{
@@ -108,6 +111,13 @@ defmodule Livebook.Session do
             runtime: Livebook.Runtime.runtime_memory() | nil,
             system: Livebook.SystemResources.memory()
           }
+
+  @type app_info :: %{
+          slug: String.t(),
+          status: Data.app_status(),
+          registered: boolean(),
+          public?: boolean()
+        }
 
   @typedoc """
   An id assigned to every running session process.
@@ -570,6 +580,14 @@ defmodule Livebook.Session do
   end
 
   @doc """
+  Sends a hub selection to the server.
+  """
+  @spec set_notebook_hub(pid(), String.t()) :: :ok
+  def set_notebook_hub(pid, id) do
+    GenServer.cast(pid, {:set_notebook_hub, self(), id})
+  end
+
+  @doc """
   Sends save request to the server.
 
   If there's a file set and the notebook changed since the last save,
@@ -681,9 +699,20 @@ defmodule Livebook.Session do
   The shutdown is graceful, so the app only terminates once all of the
   currently connected clients leave.
   """
-  @spec app_shutdown(pid()) :: :ok
-  def app_shutdown(pid) do
-    GenServer.cast(pid, {:app_shutdown, self()})
+  @spec app_unregistered(pid()) :: :ok
+  def app_unregistered(pid) do
+    GenServer.cast(pid, {:app_unregistered, self()})
+  end
+
+  @doc """
+  Sends a app stop request to the server.
+
+  This results in the app being unregistered under the given slug,
+  however it is still running.
+  """
+  @spec app_stop(pid()) :: :ok
+  def app_stop(pid) do
+    GenServer.cast(pid, {:app_stop, self()})
   end
 
   ## Callbacks
@@ -691,6 +720,7 @@ defmodule Livebook.Session do
   @impl true
   def init(opts) do
     Livebook.Settings.subscribe()
+    Livebook.Hubs.subscribe([:secrets])
     id = Keyword.fetch!(opts, :id)
 
     {:ok, worker_pid} = Livebook.Session.Worker.start_link(id)
@@ -707,6 +737,10 @@ defmodule Livebook.Session do
              else: :ok
            ) do
       state = schedule_autosave(state)
+
+      if file = state.data.file do
+        Livebook.NotebookManager.add_recent_notebook(file, state.data.notebook.name)
+      end
 
       {:ok, state}
     else
@@ -759,7 +793,11 @@ defmodule Livebook.Session do
     end
   end
 
-  defp default_notebook() do
+  @doc """
+  Returns the default notebook for a new session.
+  """
+  @spec default_notebook() :: Notebook.t()
+  def default_notebook() do
     %{Notebook.new() | sections: [%{Section.new() | cells: [Cell.new(:code)]}]}
   end
 
@@ -961,21 +999,22 @@ defmodule Livebook.Session do
         chunks = cell.chunks || [{0, byte_size(cell.source)}]
         chunk_count = length(chunks)
 
-        state = handle_operation(state, {:delete_cell, client_id, cell.id})
+        state =
+          for {{offset, size}, chunk_idx} <- Enum.with_index(chunks), reduce: state do
+            state ->
+              outputs = if(chunk_idx == chunk_count - 1, do: cell.outputs, else: [])
+              source = binary_part(cell.source, offset, size)
+              attrs = %{source: source, outputs: outputs}
+              cell_idx = index + chunk_idx
+              cell_id = Utils.random_id()
 
-        for {{offset, size}, chunk_idx} <- Enum.with_index(chunks), reduce: state do
-          state ->
-            outputs = if(chunk_idx == chunk_count - 1, do: cell.outputs, else: [])
-            source = binary_part(cell.source, offset, size)
-            attrs = %{source: source, outputs: outputs}
-            cell_idx = index + chunk_idx
-            cell_id = Utils.random_id()
+              handle_operation(
+                state,
+                {:insert_cell, client_id, section.id, cell_idx, :code, cell_id, attrs}
+              )
+          end
 
-            handle_operation(
-              state,
-              {:insert_cell, client_id, section.id, cell_idx, :code, cell_id, attrs}
-            )
-        end
+        handle_operation(state, {:delete_cell, client_id, cell.id})
       else
         _ -> state
       end
@@ -1209,8 +1248,19 @@ defmodule Livebook.Session do
     {:noreply, handle_operation(state, operation)}
   end
 
-  def handle_cast({:app_shutdown, _client_pid}, state) do
-    operation = {:app_shutdown, @client_id}
+  def handle_cast({:app_unregistered, _client_pid}, state) do
+    operation = {:app_unregistered, @client_id}
+    {:noreply, handle_operation(state, operation)}
+  end
+
+  def handle_cast({:app_stop, _client_pid}, state) do
+    operation = {:app_stop, @client_id}
+    {:noreply, handle_operation(state, operation)}
+  end
+
+  def handle_cast({:set_notebook_hub, client_pid, id}, state) do
+    client_id = client_id(state, client_pid)
+    operation = {:set_notebook_hub, client_id, id}
     {:noreply, handle_operation(state, operation)}
   end
 
@@ -1457,6 +1507,13 @@ defmodule Livebook.Session do
     {:stop, :shutdown, state}
   end
 
+  def handle_info({event, secret}, state)
+      when event in [:secret_created, :secret_updated, :secret_deleted] and
+             secret.hub_id == state.data.notebook.hub_id do
+    operation = {:sync_hub_secrets, @client_id}
+    {:noreply, handle_operation(state, operation)}
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
@@ -1481,7 +1538,16 @@ defmodule Livebook.Session do
       mode: state.data.mode,
       images_dir: images_dir_from_state(state),
       created_at: state.created_at,
-      memory_usage: state.memory_usage
+      memory_usage: state.memory_usage,
+      app_info:
+        if state.data.mode == :app do
+          %{
+            slug: state.data.notebook.app_settings.slug,
+            status: state.data.app_data.status,
+            registered: state.data.app_data.registered,
+            public?: state.data.notebook.app_settings.access_type == :public
+          }
+        end
     }
   end
 
@@ -1667,6 +1733,10 @@ defmodule Livebook.Session do
   end
 
   defp after_operation(state, _prev_state, {:set_notebook_name, _client_id, _name}) do
+    if file = state.data.file do
+      NotebookManager.update_notebook_name(file, state.data.notebook.name)
+    end
+
     notify_update(state)
   end
 
@@ -1697,6 +1767,10 @@ defmodule Livebook.Session do
 
       {:error, message} ->
         broadcast_error(state.session_id, "failed to copy images - #{message}")
+    end
+
+    if file = state.data.file do
+      Livebook.NotebookManager.add_recent_notebook(file, state.data.notebook.name)
     end
 
     notify_update(state)
@@ -1758,12 +1832,23 @@ defmodule Livebook.Session do
          _prev_state,
          {:apply_cell_delta, _client_id, cell_id, tag, _delta, _revision}
        ) do
+    hydrate_cell_source_digest(state, cell_id, tag)
+
     with :secondary <- tag,
          {:ok, %Cell.Smart{} = cell, _section} <-
            Notebook.fetch_cell_and_section(state.data.notebook, cell_id) do
       send(cell.js_view.pid, {:editor_source, cell.editor.source})
     end
 
+    state
+  end
+
+  defp after_operation(
+         state,
+         _prev_state,
+         {:update_smart_cell, _client_id, cell_id, _attrs, _delta, _chunks, _reevaluate}
+       ) do
+    hydrate_cell_source_digest(state, cell_id, :primary)
     state
   end
 
@@ -1777,10 +1862,14 @@ defmodule Livebook.Session do
     state
   end
 
-  defp after_operation(state, _prev_state, {:app_shutdown, _client_id}) do
+  defp after_operation(state, _prev_state, {:app_unregistered, _client_id}) do
     broadcast_app_message(state.session_id, {:app_registration_changed, state.session_id, false})
 
-    state
+    notify_update(state)
+  end
+
+  defp after_operation(state, _prev_state, {:set_notebook_hub, _client_id, _id}) do
+    notify_update(state)
   end
 
   defp after_operation(state, _prev_state, _operation), do: state
@@ -1885,14 +1974,21 @@ defmodule Livebook.Session do
     status = state.data.app_data.status
     broadcast_app_message(state.session_id, {:app_status_changed, state.session_id, status})
 
-    state
+    notify_update(state)
   end
 
   defp handle_action(state, :app_register) do
     Livebook.Apps.register(self(), state.data.notebook.app_settings.slug)
     broadcast_app_message(state.session_id, {:app_registration_changed, state.session_id, true})
 
-    state
+    notify_update(state)
+  end
+
+  defp handle_action(state, :app_unregister) do
+    Livebook.Apps.unregister(self(), state.data.notebook.app_settings.slug)
+    broadcast_app_message(state.session_id, {:app_registration_changed, state.session_id, false})
+
+    notify_update(state)
   end
 
   defp handle_action(state, :app_recover) do
@@ -1938,8 +2034,15 @@ defmodule Livebook.Session do
     parent_locators = parent_locators_for_cell(state.data, cell)
     Runtime.evaluate_code(state.data.runtime, cell.source, locator, parent_locators, opts)
 
-    evaluation_digest = :erlang.md5(cell.source)
-    handle_operation(state, {:evaluation_started, @client_id, cell.id, evaluation_digest})
+    state
+  end
+
+  defp hydrate_cell_source_digest(state, cell_id, tag) do
+    # Clients prune source, so they can't compute the digest, but it's
+    # necessary for evaluation to know which cells are changed, so we
+    # always propagate the digest change to the clients
+    digest = state.data.cell_infos[cell_id].sources[tag].digest
+    broadcast_message(state.session_id, {:hydrate_cell_source_digest, cell_id, tag, digest})
   end
 
   defp broadcast_operation(session_id, operation) do
@@ -1968,13 +2071,13 @@ defmodule Livebook.Session do
   end
 
   defp set_runtime_secrets(state, secrets) do
-    secrets = Enum.map(secrets, fn {name, value} -> {"LB_#{name}", value} end)
-    Runtime.put_system_envs(state.data.runtime, secrets)
+    envs_vars = Enum.map(secrets, fn {_name, secret} -> {"LB_#{secret.name}", secret.value} end)
+    Runtime.put_system_envs(state.data.runtime, envs_vars)
   end
 
   defp delete_runtime_secrets(state, secret_names) do
-    secret_names = Enum.map(secret_names, &"LB_#{&1}")
-    Runtime.delete_system_envs(state.data.runtime, secret_names)
+    env_var_names = Enum.map(secret_names, &"LB_#{&1}")
+    Runtime.delete_system_envs(state.data.runtime, env_var_names)
   end
 
   defp set_runtime_env_vars(state) do

@@ -9,7 +9,7 @@ export const EDITOR_FONT_SIZE = {
 
 export const EDITOR_THEME = {
   default: "default",
-  highContrast: "highContrast",
+  light: "light",
 };
 
 const DEFAULT_SETTINGS = {
@@ -67,6 +67,11 @@ class SettingsStore {
     const settings = load(SETTINGS_KEY);
 
     if (settings) {
+      // Rewrite settings for backward compatibility
+      if (!Object.values(EDITOR_THEME).includes(settings.editor_theme)) {
+        delete settings.editor_theme;
+      }
+
       this._settings = { ...this._settings, ...settings };
     }
   }

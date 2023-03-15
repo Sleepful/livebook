@@ -59,9 +59,10 @@ defmodule LivebookWeb.Router do
       pipe_through [:browser, :auth]
 
       live "/", HomeLive, :page
-      live "/home/import/:tab", HomeLive, :import
       live "/home/sessions/:session_id/close", HomeLive, :close_session
       live "/home/sessions/edit_sessions/:action", HomeLive, :edit_sessions
+
+      live "/open/:tab", OpenLive, :page
 
       live "/settings", SettingsLive, :page
       live "/settings/add-file-system", SettingsLive, :add_file_system
@@ -71,10 +72,14 @@ defmodule LivebookWeb.Router do
       live "/learn", LearnLive, :page
       live "/learn/notebooks/:slug", LearnLive, :notebook
 
+      live "/apps", AppsLive, :page
+
       live "/hub", Hub.NewLive, :new, as: :hub
       live "/hub/:id", Hub.EditLive, :edit, as: :hub
       live "/hub/:id/env-var/new", Hub.EditLive, :add_env_var, as: :hub
       live "/hub/:id/env-var/edit/:env_var_id", Hub.EditLive, :edit_env_var, as: :hub
+      live "/hub/:id/secrets/new", Hub.EditLive, :new_secret, as: :hub
+      live "/hub/:id/secrets/edit/:secret_name", Hub.EditLive, :edit_secret, as: :hub
 
       live "/sessions/:id", SessionLive, :page
       live "/sessions/:id/shortcuts", SessionLive, :shortcuts
@@ -96,8 +101,8 @@ defmodule LivebookWeb.Router do
     scope "/", LivebookWeb do
       pipe_through [:browser, :auth]
 
-      live "/import", HomeLive, :public_import
-      live "/open", HomeLive, :public_open
+      live "/import", OpenLive, :public_import
+      live "/open", OpenLive, :public_open
     end
   end
 
@@ -107,6 +112,7 @@ defmodule LivebookWeb.Router do
 
       live "/apps/:slug", AppLive, :page
       live "/apps/:slug/authenticate", AppAuthLive, :page
+      live "/apps/:slug/source", AppLive, :source
     end
   end
 

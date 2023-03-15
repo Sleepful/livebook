@@ -98,6 +98,7 @@ defmodule LivebookWeb.LayoutHelpers do
               </span>
             </div>
             <.sidebar_link title="Home" icon="home-6-line" to={~p"/"} current={@current_page} />
+            <.sidebar_link title="Apps" icon="rocket-line" to={~p"/apps"} current={@current_page} />
             <.sidebar_link title="Learn" icon="article-line" to={~p"/learn"} current={@current_page} />
             <.sidebar_link
               title="Settings"
@@ -212,7 +213,7 @@ defmodule LivebookWeb.LayoutHelpers do
 
   defp hub_section(assigns) do
     ~H"""
-    <div :if={Livebook.Config.feature_flag_enabled?(:hub)} id="hubs" class="flex flex-col mt-12">
+    <div id="hubs" class="flex flex-col mt-12">
       <div class="space-y-3">
         <div class="grid grid-cols-1 md:grid-cols-2 relative leading-6 mb-2">
           <small class="ml-5 font-medium text-gray-300 cursor-default">HUBS</small>
@@ -246,9 +247,9 @@ defmodule LivebookWeb.LayoutHelpers do
       "h-7 flex items-center hover:text-white #{text_color} border-l-4 #{border_color} hover:border-white"
 
     if tooltip = Provider.connection_error(hub) do
-      [to: to, data_tooltip: tooltip, class: "tooltip right " <> class]
+      [navigate: to, data_tooltip: tooltip, class: "tooltip right " <> class]
     else
-      [to: to, class: class]
+      [navigate: to, class: class]
     end
   end
 
@@ -261,12 +262,23 @@ defmodule LivebookWeb.LayoutHelpers do
 
   """
   attr :text, :string, required: true
+  attr :back_navigate, :string, default: nil
 
   def title(assigns) do
     ~H"""
-    <h1 class="text-2xl text-gray-800 font-medium">
-      <%= @text %>
-    </h1>
+    <div class="relative">
+      <div
+        :if={@back_navigate}
+        class="hidden md:flex absolute top-0 bottom-0 left-0 transform -translate-x-full"
+      >
+        <.link navigate={@back_navigate}>
+          <.remix_icon icon="arrow-left-line" class="align-middle mr-2 text-2xl text-gray-800" />
+        </.link>
+      </div>
+      <h1 class="text-2xl text-gray-800 font-medium">
+        <%= @text %>
+      </h1>
+    </div>
     """
   end
 end

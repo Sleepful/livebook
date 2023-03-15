@@ -1,7 +1,8 @@
 defmodule Livebook.SessionHelpers do
   @moduledoc false
 
-  alias Livebook.{Session, Sessions}
+  alias Livebook.{Hubs, Session, Sessions}
+  alias Livebook.Secrets.Secret
 
   import ExUnit.Assertions
   import Phoenix.LiveViewTest
@@ -56,16 +57,16 @@ defmodule Livebook.SessionHelpers do
   def assert_session_secret(view, session_pid, secret) do
     selector =
       case secret do
-        %{name: name, origin: :session} -> "#session-secret-#{name}-wrapper"
-        %{name: name, origin: :app} -> "#app-secret-#{name}-wrapper"
-        %{name: name, origin: :startup} -> "#startup-secret-#{name}-wrapper"
-        %{name: name, origin: {:hub, id}} -> "#hub-#{id}-secret-#{name}-wrapper"
+        %{name: name, hub_id: nil} -> "#session-secret-#{name}"
+        %{name: name, hub_id: id} -> "#hub-#{id}-secret-#{name}"
       end
 
     assert has_element?(view, selector)
     secrets = Session.get_data(session_pid).secrets
 
-    assert Map.has_key?(secrets, secret.name)
-    assert secrets[secret.name] == secret.value
+    assert secrets[secret.name] == secret
   end
+
+  def hub_label(%Secret{hub_id: id}), do: hub_label(Hubs.fetch_hub!(id))
+  def hub_label(hub), do: "#{hub.hub_emoji} #{hub.hub_name}"
 end

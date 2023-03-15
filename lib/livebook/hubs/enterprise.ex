@@ -36,6 +36,14 @@ defmodule Livebook.Hubs.Enterprise do
   """
   @spec change_hub(t(), map()) :: Ecto.Changeset.t()
   def change_hub(%__MODULE__{} = enterprise, attrs \\ %{}) do
+    changeset(enterprise, attrs)
+  end
+
+  @doc """
+  Returns changeset with applied validations.
+  """
+  @spec validate_hub(t(), map()) :: Ecto.Changeset.t()
+  def validate_hub(%__MODULE__{} = enterprise, attrs \\ %{}) do
     enterprise
     |> changeset(attrs)
     |> Map.put(:action, :validate)
@@ -137,17 +145,16 @@ defimpl Livebook.Hubs.Provider, for: Livebook.Hubs.Enterprise do
     EnterpriseClient.stop(enterprise.id)
   end
 
-  def capabilities(_enterprise), do: [:connect, :secrets]
+  def capabilities(_enterprise), do: ~w(connect list_secrets create_secret)a
 
   def get_secrets(enterprise) do
     EnterpriseClient.get_secrets(enterprise.id)
   end
 
   def create_secret(enterprise, secret) do
-    create_secret_request =
-      LivebookProto.CreateSecretRequest.new!(name: secret.name, value: secret.value)
+    data = LivebookProto.build_create_secret_request(name: secret.name, value: secret.value)
 
-    case EnterpriseClient.send_request(enterprise.id, create_secret_request) do
+    case EnterpriseClient.send_request(enterprise.id, data) do
       {:create_secret, _} ->
         :ok
 
@@ -164,14 +171,25 @@ defimpl Livebook.Hubs.Provider, for: Livebook.Hubs.Enterprise do
 
       {:transport_error, reason} ->
         message = "#{enterprise.hub_emoji} #{enterprise.hub_name}: #{reason}"
-        changeset = Livebook.Secrets.add_secret_error(secret, :origin, message)
+        changeset = Livebook.Secrets.add_secret_error(secret, :hub_id, message)
 
         {:error, changeset}
     end
   end
 
+  def update_secret(_enterprise, _secret), do: raise("not implemented")
+
+  def delete_secret(_enterprise, _secret), do: raise("not implemented")
+
   def connection_error(enterprise) do
     reason = EnterpriseClient.get_connection_error(enterprise.id)
     "Cannot connect to Hub: #{reason}. Will attempt to reconnect automatically..."
   end
+
+  # TODO: implement signing through the enterprise server
+  def notebook_stamp(_hub, _notebook_source, _metadata) do
+    :skip
+  end
+
+  def verify_notebook_stamp(_hub, _notebook_source, _stamp), do: raise("not implemented")
 end

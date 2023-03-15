@@ -1762,30 +1762,6 @@ defmodule Livebook.Session.DataTest do
     end
   end
 
-  describe "apply_operation/2 given :evaluation_started" do
-    test "updates cell evaluation digest" do
-      data =
-        data_after_operations!([
-          {:insert_section, @cid, 0, "s1"},
-          {:insert_cell, @cid, "s1", 0, :code, "c1", %{}},
-          {:set_runtime, @cid, connected_noop_runtime()},
-          evaluate_cells_operations(["setup"]),
-          {:queue_cells_evaluation, @cid, ["c1"]}
-        ])
-
-      operation = {:evaluation_started, @cid, "c1", "digest"}
-
-      assert {:ok,
-              %{
-                cell_infos: %{
-                  "c1" => %{
-                    eval: %{evaluation_digest: "digest"}
-                  }
-                }
-              }, []} = Data.apply_operation(data, operation)
-    end
-  end
-
   describe "apply_operation/2 given :add_cell_evaluation_output" do
     test "updates the cell outputs" do
       data =
@@ -3798,17 +3774,21 @@ defmodule Livebook.Session.DataTest do
     end
   end
 
-  describe "apply_operation/2 given :app_shutdown" do
+  describe "apply_operation/2 given :app_unregistered" do
     test "returns an error if not in app mode" do
       data = Data.new()
-      operation = {:app_shutdown, @cid}
+      operation = {:app_unregistered, @cid}
       assert :error = Data.apply_operation(data, operation)
     end
 
     test "updates app status" do
-      data = Data.new(mode: :app)
+      data =
+        data_after_operations!(Data.new(mode: :app), [
+          {:set_runtime, @cid, connected_noop_runtime()},
+          evaluate_cells_operations(["setup"])
+        ])
 
-      operation = {:app_shutdown, @cid}
+      operation = {:app_unregistered, @cid}
 
       assert {:ok, %{app_data: %{status: :shutting_down}},
               [:app_broadcast_status, :app_terminate]} = Data.apply_operation(data, operation)
@@ -3817,12 +3797,50 @@ defmodule Livebook.Session.DataTest do
     test "does not return terminate action if there are clients" do
       data =
         data_after_operations!(Data.new(mode: :app), [
+          {:set_runtime, @cid, connected_noop_runtime()},
+          evaluate_cells_operations(["setup"]),
           {:client_join, @cid, User.new()}
         ])
 
-      operation = {:app_shutdown, @cid}
+      operation = {:app_unregistered, @cid}
 
       assert {:ok, %{app_data: %{status: :shutting_down}}, [:app_broadcast_status]} =
+               Data.apply_operation(data, operation)
+    end
+  end
+
+  describe "apply_operation/2 given :app_stop" do
+    test "returns an error if not in app mode" do
+      data = Data.new()
+      operation = {:app_stop, @cid}
+      assert :error = Data.apply_operation(data, operation)
+    end
+
+    test "returns an error if app is not registered" do
+      data = Data.new()
+      operation = {:app_unregistered, @cid}
+      assert :error = Data.apply_operation(data, operation)
+    end
+
+    test "updates app status" do
+      data = Data.new(mode: :app)
+
+      operation = {:app_stop, @cid}
+
+      assert {:ok, %{app_data: %{status: :stopped}}, [:app_broadcast_status]} =
+               Data.apply_operation(data, operation)
+    end
+
+    test "returns :app_unregister action when registered" do
+      data =
+        data_after_operations!(Data.new(mode: :app), [
+          {:set_runtime, @cid, connected_noop_runtime()},
+          evaluate_cells_operations(["setup"])
+        ])
+
+      operation = {:app_stop, @cid}
+
+      assert {:ok, %{app_data: %{status: :stopped}}, [:app_broadcast_status, :app_unregister]} =
                Data.apply_operation(data, operation)
     end
   end
@@ -3918,8 +3936,10 @@ defmodule Livebook.Session.DataTest do
     test "when the app is shutting down and the last client leaves, returns terminate action" do
       data =
         data_after_operations!(Data.new(mode: :app), [
+          {:set_runtime, @cid, connected_noop_runtime()},
+          evaluate_cells_operations(["setup"]),
           {:client_join, @cid, User.new()},
-          {:app_shutdown, @cid}
+          {:app_unregistered, @cid}
         ])
 
       operation = {:client_leave, @cid}
@@ -3957,8 +3977,6 @@ defmodule Livebook.Session.DataTest do
       assert [{%{id: "c2"}, _}, {%{id: "c4"}, _}] = Data.bound_cells_with_section(data, "i1")
     end
   end
-
-  @empty_digest :erlang.md5("")
 
   describe "cell_ids_for_full_evaluation/2" do
     test "includes changed cells with dependent ones" do
@@ -4139,7 +4157,6 @@ defmodule Livebook.Session.DataTest do
           )
 
         [
-          {:evaluation_started, @cid, cell_id, @empty_digest},
           for input_id <- bind_inputs[cell_id] || [] do
             {:bind_input, @cid, cell_id, input_id}
           end,

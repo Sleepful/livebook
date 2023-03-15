@@ -32,15 +32,17 @@ defmodule Livebook.Session.Data do
     :clients_map,
     :users_map,
     :secrets,
+    :hub_secrets,
     :mode,
     :apps,
     :app_data
   ]
 
-  alias Livebook.{Notebook, Delta, Runtime, JSInterop, FileSystem}
+  alias Livebook.{Notebook, Delta, Runtime, JSInterop, FileSystem, Hubs}
   alias Livebook.Users.User
   alias Livebook.Notebook.{Cell, Section, AppSettings}
   alias Livebook.Utils.Graph
+  alias Livebook.Secrets.Secret
 
   @type t :: %__MODULE__{
           notebook: Notebook.t(),
@@ -55,7 +57,8 @@ defmodule Livebook.Session.Data do
           smart_cell_definitions: list(Runtime.smart_cell_definition()),
           clients_map: %{client_id() => User.id()},
           users_map: %{User.id() => User.t()},
-          secrets: %{(name :: String.t()) => value :: String.t()},
+          secrets: secrets(),
+          hub_secrets: list(Secret.t()),
           mode: session_mode(),
           apps: list(app()),
           app_data: nil | app_data()
@@ -88,7 +91,8 @@ defmodule Livebook.Session.Data do
   @type cell_source_info :: %{
           revision: cell_revision(),
           deltas: list(Delta.t()),
-          revision_by_client_id: %{client_id() => cell_revision()}
+          revision_by_client_id: %{client_id() => cell_revision()},
+          digest: String.t() | nil
         }
 
   @type cell_eval_info :: %{
@@ -133,8 +137,6 @@ defmodule Livebook.Session.Data do
 
   @type index :: non_neg_integer()
 
-  @type secret :: %{name: String.t(), value: String.t()}
-
   # Snapshot holds information about the cell evaluation dependencies,
   # including parent cells and inputs. Whenever the snapshot changes,
   # it implies a new evaluation context, which basically means the cell
@@ -142,6 +144,8 @@ defmodule Livebook.Session.Data do
   @type snapshot :: term()
 
   @type input_reading :: {input_id(), input_value :: term()}
+
+  @type secrets :: %{(name :: String.t()) => Secret.t()}
 
   @type session_mode :: :default | :app
 
@@ -153,7 +157,7 @@ defmodule Livebook.Session.Data do
           registered: boolean()
         }
 
-  @type app_status :: :booting | :running | :error | :shutting_down
+  @type app_status :: :booting | :running | :error | :shutting_down | :stopped
 
   @type app_data :: %{
           status: app_status(),
@@ -180,7 +184,6 @@ defmodule Livebook.Session.Data do
           | {:move_cell, client_id(), Cell.id(), offset :: integer()}
           | {:move_section, client_id(), Section.id(), offset :: integer()}
           | {:queue_cells_evaluation, client_id(), list(Cell.id())}
-          | {:evaluation_started, client_id(), Cell.id(), binary()}
           | {:add_cell_evaluation_output, client_id(), Cell.id(), term()}
           | {:add_cell_evaluation_response, client_id(), Cell.id(), term(), metadata :: map()}
           | {:bind_input, client_id(), code_cell_id :: Cell.id(), input_id()}
@@ -209,14 +212,17 @@ defmodule Livebook.Session.Data do
           | {:set_file, client_id(), FileSystem.File.t() | nil}
           | {:set_autosave_interval, client_id(), non_neg_integer() | nil}
           | {:mark_as_not_dirty, client_id()}
-          | {:set_secret, client_id(), secret()}
+          | {:set_secret, client_id(), Secret.t()}
           | {:unset_secret, client_id(), String.t()}
+          | {:set_notebook_hub, client_id(), String.t()}
+          | {:sync_hub_secrets, client_id()}
           | {:set_app_settings, client_id(), AppSettings.t()}
           | {:add_app, client_id(), Livebook.Session.id(), pid()}
           | {:set_app_status, client_id(), Livebook.Session.id(), app_status()}
           | {:set_app_registered, client_id(), Livebook.Session.id(), boolean()}
           | {:delete_app, client_id(), Livebook.Session.id()}
-          | {:app_shutdown, client_id()}
+          | {:app_unregistered, client_id()}
+          | {:app_stop, client_id()}
 
   @type action ::
           :connect_runtime
@@ -256,6 +262,20 @@ defmodule Livebook.Session.Data do
         %{status: :booting, registered: false}
       end
 
+    hub = Hubs.fetch_hub!(notebook.hub_id)
+    hub_secrets = Hubs.get_secrets(hub)
+
+    startup_secrets =
+      for secret <- Livebook.Secrets.get_startup_secrets(),
+          do: {secret.name, secret},
+          into: %{}
+
+    secrets =
+      for secret <- hub_secrets,
+          secret.name in notebook.hub_secret_names,
+          do: {secret.name, secret},
+          into: startup_secrets
+
     data = %__MODULE__{
       notebook: notebook,
       origin: opts[:origin],
@@ -269,7 +289,8 @@ defmodule Livebook.Session.Data do
       smart_cell_definitions: [],
       clients_map: %{},
       users_map: %{},
-      secrets: %{},
+      secrets: secrets,
+      hub_secrets: hub_secrets,
       mode: opts[:mode],
       apps: [],
       app_data: app_data
@@ -519,19 +540,6 @@ defmodule Livebook.Session.Data do
       |> wrap_ok()
     else
       :error
-    end
-  end
-
-  def apply_operation(data, {:evaluation_started, _client_id, id, evaluation_digest}) do
-    with {:ok, cell, _section} <- Notebook.fetch_cell_and_section(data.notebook, id),
-         Cell.evaluable?(cell),
-         :evaluating <- data.cell_infos[cell.id].eval.status do
-      data
-      |> with_actions()
-      |> update_cell_eval_info!(cell.id, &%{&1 | evaluation_digest: evaluation_digest})
-      |> wrap_ok()
-    else
-      _ -> :error
     end
   end
 
@@ -827,6 +835,7 @@ defmodule Livebook.Session.Data do
     data
     |> with_actions()
     |> set_secret(secret)
+    |> update_notebook_hub_secret_names()
     |> wrap_ok()
   end
 
@@ -834,6 +843,29 @@ defmodule Livebook.Session.Data do
     data
     |> with_actions()
     |> unset_secret(secret_name)
+    |> update_notebook_hub_secret_names()
+    |> wrap_ok()
+  end
+
+  def apply_operation(data, {:set_notebook_hub, _client_id, id}) do
+    with {:ok, hub} <- Hubs.fetch_hub(id) do
+      data
+      |> with_actions()
+      |> set_notebook_hub(hub)
+      |> update_notebook_hub_secret_names()
+      |> set_dirty()
+      |> wrap_ok()
+    else
+      _ -> :error
+    end
+  end
+
+  def apply_operation(data, {:sync_hub_secrets, _client_id}) do
+    data
+    |> with_actions()
+    |> sync_hub_secrets()
+    |> update_notebook_hub_secret_names()
+    |> set_dirty()
     |> wrap_ok()
   end
 
@@ -841,6 +873,7 @@ defmodule Livebook.Session.Data do
     data
     |> with_actions()
     |> set_app_settings(settings)
+    |> set_dirty()
     |> wrap_ok()
   end
 
@@ -884,12 +917,24 @@ defmodule Livebook.Session.Data do
     end
   end
 
-  def apply_operation(data, {:app_shutdown, _client_id}) do
+  def apply_operation(data, {:app_unregistered, _client_id}) do
+    with :app <- data.mode,
+         true <- data.app_data.registered do
+      data
+      |> with_actions()
+      |> app_unregistered()
+      |> app_maybe_terminate()
+      |> wrap_ok()
+    else
+      _ -> :error
+    end
+  end
+
+  def apply_operation(data, {:app_stop, _client_id}) do
     with :app <- data.mode do
       data
       |> with_actions()
-      |> app_shutdown()
-      |> app_maybe_terminate()
+      |> app_stop()
       |> wrap_ok()
     else
       _ -> :error
@@ -1361,24 +1406,26 @@ defmodule Livebook.Session.Data do
 
       data_actions
       |> set!(notebook: Notebook.update_cell(data.notebook, cell.id, &%{&1 | outputs: []}))
-      |> update_cell_eval_info!(cell.id, fn eval_info ->
-        %{
-          eval_info
-          | # Note: we intentionally mark the cell as evaluating up front,
-            # so that another queue operation doesn't cause duplicated
-            # :start_evaluation action
-            status: :evaluating,
-            evaluation_number: eval_info.evaluation_number + 1,
-            outputs_batch_number: eval_info.outputs_batch_number + 1,
-            evaluation_digest: nil,
-            new_bound_to_input_ids: MapSet.new(),
-            # Keep the notebook state before evaluation
-            data: data,
-            # This is a rough estimate, the exact time is measured in the
-            # evaluator itself
-            evaluation_start: DateTime.utc_now(),
-            evaluation_end: nil
-        }
+      |> update_cell_info!(cell.id, fn info ->
+        update_in(info.eval, fn eval_info ->
+          %{
+            eval_info
+            | # Note: we intentionally mark the cell as evaluating up front,
+              # so that another queue operation doesn't cause duplicated
+              # :start_evaluation action
+              status: :evaluating,
+              evaluation_number: eval_info.evaluation_number + 1,
+              outputs_batch_number: eval_info.outputs_batch_number + 1,
+              evaluation_digest: info.sources.primary.digest,
+              new_bound_to_input_ids: MapSet.new(),
+              # Keep the notebook state before evaluation
+              data: data,
+              # This is a rough estimate, the exact time is measured in the
+              # evaluator itself
+              evaluation_start: DateTime.utc_now(),
+              evaluation_end: nil
+          }
+        end)
       end)
       |> set_section_info!(section.id,
         evaluating_cell_id: cell.id,
@@ -1445,7 +1492,7 @@ defmodule Livebook.Session.Data do
       |> Notebook.parent_cells_with_section(cell_id)
       |> Enum.filter(fn {cell, _section} ->
         info = data.cell_infos[cell.id]
-        Cell.evaluable?(cell) and info.eval.validity != :evaluated and info.eval.status == :ready
+        Cell.evaluable?(cell) and cell_outdated?(data, cell) and info.eval.status == :ready
       end)
       |> Enum.reverse()
 
@@ -1519,15 +1566,17 @@ defmodule Livebook.Session.Data do
          js_view,
          editor
        ) do
-    updated_cell =
-      %{cell | chunks: chunks, js_view: js_view, editor: editor} |> apply_delta_to_cell(delta)
+    cell = %{cell | chunks: chunks, js_view: js_view, editor: editor}
+    source_info = data.cell_infos[cell.id].sources.primary
+    {updated_cell, source_info} = apply_delta_to_cell(cell, source_info, :primary, delta)
 
     data_actions
     |> set!(notebook: Notebook.update_cell(data.notebook, cell.id, fn _ -> updated_cell end))
     |> update_cell_info!(cell.id, &%{&1 | status: :started})
     |> update_cell_info!(cell.id, fn info ->
       info = %{info | status: :started}
-      put_in(info.sources.secondary, new_source_info(data.clients_map))
+      info = put_in(info.sources.primary, source_info)
+      put_in(info.sources.secondary, new_source_info(editor && editor.source, data.clients_map))
     end)
     |> add_action({:broadcast_delta, client_id, updated_cell, :primary, delta})
   end
@@ -1539,10 +1588,15 @@ defmodule Livebook.Session.Data do
         _attrs -> attrs
       end
 
-    updated_cell = %{cell | attrs: new_attrs, chunks: chunks} |> apply_delta_to_cell(delta)
+    cell = %{cell | attrs: new_attrs, chunks: chunks}
+    source_info = data.cell_infos[cell.id].sources.primary
+    {updated_cell, source_info} = apply_delta_to_cell(cell, source_info, :primary, delta)
 
     data_actions
     |> set!(notebook: Notebook.update_cell(data.notebook, cell.id, fn _ -> updated_cell end))
+    |> update_cell_info!(cell.id, fn info ->
+      put_in(info.sources.primary, source_info)
+    end)
     |> add_action({:broadcast_delta, client_id, updated_cell, :primary, delta})
   end
 
@@ -1597,6 +1651,27 @@ defmodule Livebook.Session.Data do
   defp set_notebook_name({data, _} = data_actions, name) do
     data_actions
     |> set!(notebook: %{data.notebook | name: name})
+  end
+
+  defp set_notebook_hub({data, _} = data_actions, hub) do
+    data_actions
+    |> set!(
+      notebook: %{data.notebook | hub_id: hub.id},
+      hub_secrets: Hubs.get_secrets(hub)
+    )
+  end
+
+  defp sync_hub_secrets({data, _} = data_actions) do
+    hub = Livebook.Hubs.fetch_hub!(data.notebook.hub_id)
+    secrets = Livebook.Hubs.get_secrets(hub)
+    set!(data_actions, hub_secrets: secrets)
+  end
+
+  defp update_notebook_hub_secret_names({data, _} = data_actions) do
+    hub_secret_names =
+      for {_name, secret} <- data.secrets, secret.hub_id == data.notebook.hub_id, do: secret.name
+
+    set!(data_actions, notebook: %{data.notebook | hub_secret_names: hub_secret_names})
   end
 
   defp set_section_name({data, _} = data_actions, section, name) do
@@ -1681,11 +1756,8 @@ defmodule Livebook.Session.Data do
         source_info
       end
 
-    updated_cell =
-      update_in(cell, source_access(cell, tag), fn
-        :__pruned__ -> :__pruned__
-        source -> JSInterop.apply_delta_to_string(transformed_new_delta, source)
-      end)
+    {updated_cell, source_info} =
+      apply_delta_to_cell(cell, source_info, tag, transformed_new_delta)
 
     data_actions
     |> set!(notebook: Notebook.update_cell(data.notebook, cell.id, fn _ -> updated_cell end))
@@ -1693,15 +1765,29 @@ defmodule Livebook.Session.Data do
     |> add_action({:broadcast_delta, client_id, updated_cell, tag, transformed_new_delta})
   end
 
+  # Note: the clients drop cell's source once it's no longer needed
+  defp apply_delta_to_cell(%{source: :__pruned__} = cell, source_info, _tag, _delta) do
+    {cell, source_info}
+  end
+
+  defp apply_delta_to_cell(cell, source_info, tag, delta) do
+    cell =
+      update_in(cell, source_access(cell, tag), fn
+        :__pruned__ -> :__pruned__
+        source -> JSInterop.apply_delta_to_string(delta, source)
+      end)
+
+    source_info =
+      case get_in(cell, source_access(cell, tag)) do
+        :__pruned__ -> source_info
+        source -> %{source_info | digest: :erlang.md5(source)}
+      end
+
+    {cell, source_info}
+  end
+
   defp source_access(%Cell.Smart{}, :secondary), do: [Access.key(:editor), :source]
   defp source_access(_cell, :primary), do: [Access.key(:source)]
-
-  # Note: the clients drop cell's source once it's no longer needed
-  defp apply_delta_to_cell(%{source: :__pruned__} = cell, _delta), do: cell
-
-  defp apply_delta_to_cell(cell, delta) do
-    update_in(cell.source, &JSInterop.apply_delta_to_string(delta, &1))
-  end
 
   defp report_revision(data_actions, client_id, cell, tag, revision) do
     data_actions
@@ -1737,7 +1823,7 @@ defmodule Livebook.Session.Data do
   end
 
   defp set_secret({data, _} = data_actions, secret) do
-    secrets = Map.put(data.secrets, secret.name, secret.value)
+    secrets = Map.put(data.secrets, secret.name, secret)
     set!(data_actions, secrets: secrets)
   end
 
@@ -1775,10 +1861,25 @@ defmodule Livebook.Session.Data do
     set!(data_actions, apps: apps)
   end
 
-  defp app_shutdown(data_actions) do
+  defp app_unregistered(data_actions) do
     data_actions
     |> set_app_data!(status: :shutting_down, registered: false)
     |> add_action(:app_broadcast_status)
+  end
+
+  defp app_stop({data, _} = data_actions) do
+    data_actions =
+      data_actions
+      |> set_app_data!(status: :stopped)
+      |> add_action(:app_broadcast_status)
+
+    if data.app_data.registered do
+      data_actions
+      |> set_app_data!(registered: false)
+      |> add_action(:app_unregister)
+    else
+      data_actions
+    end
   end
 
   defp app_maybe_terminate({data, _} = data_actions) do
@@ -1938,34 +2039,39 @@ defmodule Livebook.Session.Data do
     }
   end
 
-  defp new_cell_info(%Cell.Markdown{}, clients_map) do
+  defp new_cell_info(%Cell.Markdown{} = cell, clients_map) do
     %{
-      sources: %{primary: new_source_info(clients_map)}
+      sources: %{primary: new_source_info(cell.source, clients_map)}
     }
   end
 
-  defp new_cell_info(%Cell.Code{}, clients_map) do
+  defp new_cell_info(%Cell.Code{} = cell, clients_map) do
     %{
-      sources: %{primary: new_source_info(clients_map)},
+      sources: %{primary: new_source_info(cell.source, clients_map)},
       eval: new_eval_info()
     }
   end
 
-  defp new_cell_info(%Cell.Smart{}, clients_map) do
+  defp new_cell_info(%Cell.Smart{} = cell, clients_map) do
     %{
-      sources: %{primary: new_source_info(clients_map), secondary: new_source_info(clients_map)},
+      sources: %{
+        primary: new_source_info(cell.source, clients_map),
+        secondary: new_source_info(cell.editor && cell.editor.source, clients_map)
+      },
       eval: new_eval_info(),
       status: :dead
     }
   end
 
-  defp new_source_info(clients_map) do
+  defp new_source_info(source, clients_map) do
+    digest = source && :erlang.md5(source)
     client_ids = Map.keys(clients_map)
 
     %{
       revision: 0,
       deltas: [],
-      revision_by_client_id: Map.new(client_ids, &{&1, 0})
+      revision_by_client_id: Map.new(client_ids, &{&1, 0}),
+      digest: digest
     }
   end
 
@@ -2330,7 +2436,7 @@ defmodule Livebook.Session.Data do
        do: data_actions
 
   defp app_compute_status({data, _} = data_actions)
-       when data.app_data.status == :shutting_down,
+       when data.app_data.status in [:shutting_down, :stopped],
        do: data_actions
 
   defp app_compute_status({data, _} = data_actions) do
@@ -2382,8 +2488,7 @@ defmodule Livebook.Session.Data do
   @spec cell_outdated?(t(), Cell.t()) :: boolean()
   def cell_outdated?(data, cell) do
     info = data.cell_infos[cell.id]
-    digest = :erlang.md5(cell.source)
-    info.eval.validity != :evaluated or info.eval.evaluation_digest != digest
+    info.eval.validity != :evaluated or info.eval.evaluation_digest != info.sources.primary.digest
   end
 
   @doc """
@@ -2511,5 +2616,43 @@ defmodule Livebook.Session.Data do
       end
 
     Map.fetch(data.input_values, input_id)
+  end
+
+  @doc """
+  Returns a list of secrets that don't belong to the given hub
+  and are effectively stored in the session only.
+  """
+  @spec session_secrets(secrets(), String.t()) :: list(Secret.t())
+  def session_secrets(secrets, hub_id) do
+    for {_name, secret} <- secrets, secret.hub_id != hub_id, do: secret
+  end
+
+  @doc """
+  Checks whether the given hub secret is present in secrets.
+  """
+  @spec secret_toggled?(Secret.t(), secrets()) :: boolean()
+  def secret_toggled?(secret, secrets) do
+    Map.has_key?(secrets, secret.name) and secrets[secret.name].hub_id == secret.hub_id
+  end
+
+  @doc """
+  Checks whether the given hub secret is present in secrets and has
+  old value.
+  """
+  @spec secret_outdated?(Secret.t(), secrets()) :: boolean()
+  def secret_outdated?(secret, secrets) do
+    secret_used_value(secret, secrets) != secret.value
+  end
+
+  @doc """
+  Returns currently used hub secret value (or actual value if not used).
+  """
+  @spec secret_used_value(Secret.t(), secrets()) :: String.t()
+  def secret_used_value(secret, secrets) do
+    if secret_toggled?(secret, secrets) do
+      secrets[secret.name].value
+    else
+      secret.value
+    end
   end
 end

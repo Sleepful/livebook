@@ -5,10 +5,9 @@ defmodule LivebookWeb.SessionLive do
   import LivebookWeb.SessionHelpers
   import Livebook.Utils, only: [format_bytes: 1]
 
-  alias Livebook.{Sessions, Session, Delta, Notebook, Runtime, LiveMarkdown, Secrets}
+  alias Livebook.{Sessions, Session, Delta, Notebook, Runtime, LiveMarkdown}
   alias Livebook.Notebook.{Cell, ContentLoader}
   alias Livebook.JSInterop
-  alias Livebook.Hubs
 
   on_mount(LivebookWeb.SidebarHook)
 
@@ -24,8 +23,7 @@ defmodule LivebookWeb.SessionLive do
               Session.register_client(session_pid, self(), socket.assigns.current_user)
 
             Session.subscribe(session_id)
-            Secrets.subscribe()
-            Hubs.subscribe(:secrets)
+            Livebook.NotebookManager.subscribe_starred_notebooks()
 
             {data, client_id}
           else
@@ -48,7 +46,6 @@ defmodule LivebookWeb.SessionLive do
           end
 
         session = Session.get_by_pid(session_pid)
-
         platform = platform_from_socket(socket)
 
         {:ok,
@@ -61,10 +58,10 @@ defmodule LivebookWeb.SessionLive do
            data_view: data_to_view(data),
            autofocus_cell_id: autofocus_cell_id(data.notebook),
            page_title: get_page_title(data.notebook.name),
-           saved_secrets: get_saved_secrets(),
            select_secret_ref: nil,
            select_secret_options: nil,
-           allowed_uri_schemes: Livebook.Config.allowed_uri_schemes()
+           allowed_uri_schemes: Livebook.Config.allowed_uri_schemes(),
+           starred_files: Livebook.NotebookManager.starred_notebooks() |> starred_files()
          )
          |> assign_private(data: data)
          |> prune_outputs()
@@ -188,18 +185,20 @@ defmodule LivebookWeb.SessionLive do
         class="flex flex-col h-full w-full max-w-xs absolute z-30 top-0 left-[64px] overflow-y-auto shadow-xl md:static md:shadow-none bg-gray-50 border-r border-gray-100 px-6 pt-16 md:py-8"
         data-el-side-panel
       >
-        <div data-el-sections-list>
+        <div class="flex grow" data-el-sections-list>
           <.sections_list data_view={@data_view} />
         </div>
         <div data-el-clients-list>
           <.clients_list data_view={@data_view} client_id={@client_id} />
         </div>
         <div data-el-secrets-list>
-          <.secrets_list
-            data_view={@data_view}
-            saved_secrets={@saved_secrets}
-            hubs={@saved_hubs}
+          <.live_component
+            module={LivebookWeb.SessionLive.SecretsListComponent}
+            id="secrets-list"
             session={@session}
+            secrets={@data_view.secrets}
+            hub_secrets={@data_view.hub_secrets}
+            hub={@data_view.hub}
           />
         </div>
         <div data-el-app-info>
@@ -226,67 +225,114 @@ defmodule LivebookWeb.SessionLive do
           global_status={@data_view.global_status}
         />
         <div
-          class="w-full max-w-screen-lg px-4 sm:pl-8 sm:pr-16 md:pl-16 pt-4 sm:py-5 mx-auto"
+          class="relative w-full max-w-screen-lg px-4 sm:pl-8 sm:pr-16 md:pl-16 pt-4 sm:py-5 mx-auto"
           data-el-notebook-content
         >
-          <div
-            class="flex items-center pb-4 mb-2 space-x-4 border-b border-gray-200"
-            data-el-notebook-headline
-            data-focusable-id="notebook"
-            id="notebook"
-            phx-hook="Headline"
-            data-on-value-change="set_notebook_name"
-            data-metadata="notebook"
-          >
-            <h1
-              class="grow p-1 -ml-1 text-3xl font-semibold text-gray-800 border border-transparent rounded-lg whitespace-pre-wrap"
-              tabindex="0"
-              id="notebook-heading"
-              data-el-heading
-              spellcheck="false"
-              phx-no-format
-            ><%= @data_view.notebook_name %></h1>
-            <.menu id="session-menu">
+          <div class="pb-4 mb-2 border-b border-gray-200">
+            <div class="flex flex-nowrap items-center gap-2">
+              <div
+                class="grow"
+                data-el-notebook-headline
+                data-focusable-id="notebook"
+                id="notebook"
+                phx-hook="Headline"
+                data-on-value-change="set_notebook_name"
+                data-metadata="notebook"
+              >
+                <h1
+                  class="px-1 -ml-1.5 text-3xl font-semibold text-gray-800 border border-transparent rounded-lg whitespace-pre-wrap"
+                  tabindex="0"
+                  id="notebook-heading"
+                  data-el-heading
+                  spellcheck="false"
+                  phx-no-format
+                ><%= @data_view.notebook_name %></h1>
+              </div>
+
+              <.menu id="session-menu">
+                <:toggle>
+                  <button class="icon-button" aria-label="open notebook menu">
+                    <.remix_icon icon="more-2-fill" class="text-xl" />
+                  </button>
+                </:toggle>
+                <.menu_item>
+                  <.link patch={~p"/sessions/#{@session.id}/export/livemd"} role="menuitem">
+                    <.remix_icon icon="download-2-line" />
+                    <span>Export</span>
+                  </.link>
+                </.menu_item>
+                <.menu_item>
+                  <button role="menuitem" phx-click="erase_outputs">
+                    <.remix_icon icon="eraser-fill" />
+                    <span>Erase outputs</span>
+                  </button>
+                </.menu_item>
+                <.menu_item>
+                  <button role="menuitem" phx-click="fork_session">
+                    <.remix_icon icon="git-branch-line" />
+                    <span>Fork</span>
+                  </button>
+                </.menu_item>
+                <span
+                  class="tooltip left"
+                  data-tooltip={@data_view.file == nil && "Save this notebook before starring it"}
+                >
+                  <.menu_item disabled={@data_view.file == nil}>
+                    <%= if @data_view.file in @starred_files do %>
+                      <button type="button" role="menuitem" phx-click="unstar_notebook">
+                        <.remix_icon icon="star-fill" />
+                        <span>Unstar notebook</span>
+                      </button>
+                    <% else %>
+                      <button type="button" role="menuitem" phx-click="star_notebook">
+                        <.remix_icon icon="star-line" />
+                        <span>Star notebook</span>
+                      </button>
+                    <% end %>
+                  </.menu_item>
+                </span>
+                <.menu_item>
+                  <a role="menuitem" href={live_dashboard_process_path(@session.pid)} target="_blank">
+                    <.remix_icon icon="dashboard-2-line" />
+                    <span>See on Dashboard</span>
+                  </a>
+                </.menu_item>
+                <.menu_item variant={:danger}>
+                  <.link navigate={~p"/home/sessions/#{@session.id}/close"} role="menuitem">
+                    <.remix_icon icon="close-circle-line" />
+                    <span>Close</span>
+                  </.link>
+                </.menu_item>
+              </.menu>
+            </div>
+            <.menu position={:bottom_left} id="notebook-hub-menu">
               <:toggle>
-                <button class="icon-button" aria-label="open notebook menu">
-                  <.remix_icon icon="more-2-fill" class="text-xl" />
-                </button>
+                <div
+                  class="inline-flex items-center group cursor-pointer gap-1 mt-1 text-sm text-gray-600 hover:text-gray-800 focus:text-gray-800"
+                  aria-label={@data_view.hub.hub_name}
+                >
+                  <span>in</span>
+                  <span class="text-lg pl-1"><%= @data_view.hub.hub_emoji %></span>
+                  <span><%= @data_view.hub.hub_name %></span>
+                  <.remix_icon icon="arrow-down-s-line" class="invisible group-hover:visible" />
+                </div>
               </:toggle>
-              <:content>
-                <.link
-                  patch={~p"/sessions/#{@session.id}/export/livemd"}
-                  class="menu-item text-gray-500"
+              <.menu_item :for={hub <- @saved_hubs}>
+                <button
+                  id={"select-hub-#{hub.id}"}
+                  phx-click={JS.push("select_hub", value: %{id: hub.id})}
+                  aria-label={hub.name}
                   role="menuitem"
                 >
-                  <.remix_icon icon="download-2-line" />
-                  <span class="font-medium">Export</span>
-                </.link>
-                <button class="menu-item text-gray-500" role="menuitem" phx-click="erase_outputs">
-                  <.remix_icon icon="eraser-fill" />
-                  <span class="font-medium">Erase outputs</span>
+                  <%= hub.emoji %>
+                  <span class="ml-2"><%= hub.name %></span>
                 </button>
-                <button class="menu-item text-gray-500" role="menuitem" phx-click="fork_session">
-                  <.remix_icon icon="git-branch-line" />
-                  <span class="font-medium">Fork</span>
-                </button>
-                <a
-                  class="menu-item text-gray-500"
-                  role="menuitem"
-                  href={live_dashboard_process_path(@session.pid)}
-                  target="_blank"
-                >
-                  <.remix_icon icon="dashboard-2-line" />
-                  <span class="font-medium">See on Dashboard</span>
-                </a>
-                <.link
-                  navigate={~p"/home/sessions/#{@session.id}/close"}
-                  class="menu-item text-gray-900"
-                  role="menuitem"
-                >
-                  <.remix_icon icon="close-circle-line" />
-                  <span class="font-medium">Close</span>
+              </.menu_item>
+              <.menu_item>
+                <.link navigate={~p"/hub"} aria-label="Add Hub" role="menuitem">
+                  <.remix_icon icon="add-line" class="align-middle mr-1" /> Add Hub
                 </.link>
-              </:content>
+              </.menu_item>
             </.menu>
           </div>
           <div>
@@ -334,7 +380,7 @@ defmodule LivebookWeb.SessionLive do
       :if={@live_action == :runtime_settings}
       id="runtime-settings-modal"
       show
-      class="w-full max-w-4xl"
+      width={:big}
       patch={@self_path}
     >
       <.live_component
@@ -349,25 +395,24 @@ defmodule LivebookWeb.SessionLive do
       :if={@live_action == :file_settings}
       id="persistence-modal"
       show
-      class="w-full max-w-4xl"
+      width={:big}
       patch={@self_path}
     >
-      <%= live_render(@socket, LivebookWeb.SessionLive.PersistenceLive,
-        id: "persistence",
-        session: %{
-          "session" => @session,
-          "file" => @data_view.file,
-          "persist_outputs" => @data_view.persist_outputs,
-          "autosave_interval_s" => @data_view.autosave_interval_s
-        }
-      ) %>
+      <.live_component
+        module={LivebookWeb.SessionLive.PersistenceComponent}
+        id="persistence"
+        session={@session}
+        file={@data_view.file}
+        persist_outputs={@data_view.persist_outputs}
+        autosave_interval_s={@data_view.autosave_interval_s}
+      />
     </.modal>
 
     <.modal
       :if={@live_action == :shortcuts}
       id="shortcuts-modal"
       show
-      class="w-full max-w-6xl"
+      width={:large}
       patch={@self_path}
     >
       <.live_component
@@ -381,7 +426,7 @@ defmodule LivebookWeb.SessionLive do
       :if={@live_action == :cell_settings}
       id="cell-settings-modal"
       show
-      class="w-full max-w-xl"
+      width={:medium}
       patch={@self_path}
     >
       <.live_component
@@ -397,7 +442,7 @@ defmodule LivebookWeb.SessionLive do
       :if={@live_action == :cell_upload}
       id="cell-upload-modal"
       show
-      class="w-full max-w-xl"
+      width={:medium}
       patch={@self_path}
     >
       <.live_component
@@ -414,7 +459,7 @@ defmodule LivebookWeb.SessionLive do
       :if={@live_action == :delete_section}
       id="delete-section-modal"
       show
-      class="w-full max-w-xl"
+      width={:medium}
       patch={@self_path}
     >
       <.live_component
@@ -427,7 +472,7 @@ defmodule LivebookWeb.SessionLive do
       />
     </.modal>
 
-    <.modal :if={@live_action == :bin} id="bin-modal" show class="w-full max-w-4xl" patch={@self_path}>
+    <.modal :if={@live_action == :bin} id="bin-modal" show width={:big} patch={@self_path}>
       <.live_component
         module={LivebookWeb.SessionLive.BinComponent}
         id="bin"
@@ -437,13 +482,7 @@ defmodule LivebookWeb.SessionLive do
       />
     </.modal>
 
-    <.modal
-      :if={@live_action == :export}
-      id="export-modal"
-      show
-      class="w-full max-w-4xl"
-      patch={@self_path}
-    >
+    <.modal :if={@live_action == :export} id="export-modal" show width={:big} patch={@self_path}>
       <.live_component
         module={LivebookWeb.SessionLive.ExportComponent}
         id="export"
@@ -456,7 +495,7 @@ defmodule LivebookWeb.SessionLive do
       :if={@live_action == :package_search}
       id="package-search-modal"
       show
-      class="w-full max-w-xl"
+      width={:medium}
       patch={@self_path}
     >
       <%= live_render(@socket, LivebookWeb.SessionLive.PackageSearchLive,
@@ -469,19 +508,14 @@ defmodule LivebookWeb.SessionLive do
       ) %>
     </.modal>
 
-    <.modal
-      :if={@live_action == :secrets}
-      id="secrets-modal"
-      show
-      class="w-full max-w-4xl"
-      patch={@self_path}
-    >
+    <.modal :if={@live_action == :secrets} id="secrets-modal" show width={:big} patch={@self_path}>
       <.live_component
         module={LivebookWeb.SessionLive.SecretsComponent}
         id="secrets"
         session={@session}
         secrets={@data_view.secrets}
-        saved_secrets={@saved_secrets}
+        hub_secrets={@data_view.hub_secrets}
+        hub={@data_view.hub}
         prefill_secret_name={@prefill_secret_name}
         select_secret_ref={@select_secret_ref}
         select_secret_options={@select_secret_options}
@@ -553,7 +587,7 @@ defmodule LivebookWeb.SessionLive do
               </span>
             </span>
           </button>
-          <.session_status
+          <.section_status
             status={elem(section_item.status, 0)}
             cell_id={elem(section_item.status, 1)}
           />
@@ -565,6 +599,14 @@ defmodule LivebookWeb.SessionLive do
       >
         <.remix_icon icon="add-line" class="text-lg align-center" />
         <span>New section</span>
+      </button>
+      <div class="grow"></div>
+      <button
+        class="inline-flex items-center justify-center p-8 py-1 mt-8 space-x-2 text-sm font-medium text-gray-500 border border-gray-400 border-dashed rounded-xl hover:bg-gray-100"
+        data-el-section-toggle-collapse-all-button
+      >
+        <.remix_icon icon="split-cells-vertical" class="text-lg align-center" />
+        <span>Expand/collapse all</span>
       </button>
     </div>
     """
@@ -623,200 +665,6 @@ defmodule LivebookWeb.SessionLive do
         </div>
       </div>
     </div>
-    """
-  end
-
-  defp secrets_list(assigns) do
-    ~H"""
-    <div class="flex flex-col grow">
-      <div class="flex justify-between items-center">
-        <h3 class="uppercase text-sm font-semibold text-gray-500">
-          Secrets
-        </h3>
-        <.secrets_info_icon />
-      </div>
-      <span class="text-sm text-gray-500">Available only to this session</span>
-      <div class="flex flex-col">
-        <div class="flex flex-col space-y-4 mt-6">
-          <div
-            :for={{secret_name, secret_value} <- Enum.sort(@data_view.secrets)}
-            class="flex flex-col text-gray-500 rounded-lg px-2 pt-1"
-            id={"session-secret-#{secret_name}-wrapper"}
-          >
-            <span
-              class="text-sm font-mono break-all flex-row cursor-pointer"
-              phx-click={
-                JS.toggle(to: "#session-secret-#{secret_name}-detail", display: "flex")
-                |> toggle_class("bg-gray-100", to: "#session-secret-#{secret_name}-wrapper")
-              }
-            >
-              <%= secret_name %>
-            </span>
-            <div
-              class="flex flex-row justify-between items-center my-1 hidden"
-              id={"session-secret-#{secret_name}-detail"}
-            >
-              <span class="text-sm font-mono break-all flex-row">
-                <%= secret_value %>
-              </span>
-              <button
-                id={"session-secret-#{secret_name}-delete"}
-                type="button"
-                phx-click={
-                  with_confirm(
-                    JS.push("delete_session_secret", value: %{secret_name: secret_name}),
-                    title: "Delete session secret - #{secret_name}",
-                    description: "Are you sure you want to delete this session secret?",
-                    confirm_text: "Delete",
-                    confirm_icon: "delete-bin-6-line"
-                  )
-                }
-                class="hover:text-gray-900"
-              >
-                <.remix_icon icon="delete-bin-line" />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <.link
-          patch={~p"/sessions/#{@session.id}/secrets"}
-          class="inline-flex items-center justify-center p-8 py-1 mt-6 space-x-2 text-sm font-medium text-gray-500 border border-gray-400 border-dashed rounded-xl hover:bg-gray-100"
-          role="button"
-        >
-          <.remix_icon icon="add-line" class="text-lg align-center" />
-          <span>New secret</span>
-        </.link>
-
-        <div class="mt-16">
-          <h3 class="uppercase text-sm font-semibold text-gray-500">
-            App secrets
-          </h3>
-          <span class="text-sm text-gray-500">
-            <%= if @saved_secrets == [] do %>
-              No secrets stored in Livebook so far
-            <% else %>
-              Toggle to share with this session
-            <% end %>
-          </span>
-        </div>
-
-        <div class="flex flex-col space-y-4 mt-6">
-          <.secrets_item
-            :for={secret when secret.origin in [:app, :startup] <- @saved_secrets}
-            secret={secret}
-            prefix={to_string(secret.origin)}
-            data_secrets={@data_view.secrets}
-            hubs={@hubs}
-          />
-        </div>
-
-        <div :if={Livebook.Config.feature_flag_enabled?(:hub)} class="mt-16">
-          <h3 class="uppercase text-sm font-semibold text-gray-500">
-            Hub secrets
-          </h3>
-          <span class="text-sm text-gray-500">
-            <%= if @saved_secrets == [] do %>
-              No secrets stored in Livebook so far
-            <% else %>
-              Toggle to share with this session
-            <% end %>
-          </span>
-        </div>
-
-        <div class="flex flex-col space-y-4 mt-6">
-          <.secrets_item
-            :for={%{origin: {:hub, id}} = secret <- @saved_secrets}
-            secret={secret}
-            prefix={"hub-#{id}"}
-            data_secrets={@data_view.secrets}
-            hubs={@hubs}
-          />
-        </div>
-      </div>
-    </div>
-    """
-  end
-
-  defp secrets_item(assigns) do
-    ~H"""
-    <div
-      class="flex flex-col text-gray-500 rounded-lg px-2 pt-1"
-      id={"#{@prefix}-secret-#{@secret.name}-wrapper"}
-    >
-      <div class="flex flex-col text-gray-800">
-        <div class="flex flex-col">
-          <div class="flex justify-between items-center">
-            <span
-              class="text-sm font-mono w-full break-all flex-row cursor-pointer"
-              phx-click={
-                JS.toggle(to: "##{@prefix}-secret-#{@secret.name}-detail", display: "flex")
-                |> toggle_class("bg-gray-100", to: "##{@prefix}-secret-#{@secret.name}-wrapper")
-              }
-            >
-              <%= @secret.name %>
-            </span>
-            <.form
-              :let={f}
-              for={%{"toggled" => secret_toggled?(@secret, @data_secrets)}}
-              as={:data}
-              phx-change="toggle_secret"
-            >
-              <.switch_field
-                field={f[:toggled]}
-                label={secret_label(@secret, @hubs)}
-                tooltip={secret_tooltip(@secret, @hubs)}
-              />
-              <.hidden_field field={f[:name]} value={@secret.name} />
-              <.hidden_field field={f[:value]} value={@secret.value} />
-            </.form>
-          </div>
-          <div
-            class="flex flex-row justify-between items-center my-1 hidden"
-            id={"#{@prefix}-secret-#{@secret.name}-detail"}
-          >
-            <span class="text-sm font-mono break-all flex-row">
-              <%= @secret.value %>
-            </span>
-            <button
-              :if={@secret.origin == :app}
-              id={"#{@prefix}-secret-#{@secret.name}-delete"}
-              type="button"
-              phx-click={
-                with_confirm(
-                  JS.push("delete_app_secret", value: %{secret_name: @secret.name}),
-                  title: "Delete app secret - #{@secret.name}",
-                  description: "Are you sure you want to delete this app secret?",
-                  confirm_text: "Delete",
-                  confirm_icon: "delete-bin-6-line"
-                )
-              }
-              class="hover:text-gray-900"
-            >
-              <.remix_icon icon="delete-bin-line" />
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-    """
-  end
-
-  defp secrets_info_icon(assigns) do
-    ~H"""
-    <span
-      class="icon-button p-0 cursor-pointer tooltip bottom-left"
-      data-tooltip={
-        ~S'''
-        Secrets are a safe way to share credentials
-        and tokens with notebooks. They are often
-        accessed by Smart cells and can be read as
-        environment variables using the LB_ prefix.
-        '''
-      }
-    >
-      <.remix_icon icon="question-line" class="text-xl leading-none" />
-    </span>
     """
   end
 
@@ -917,44 +765,23 @@ defmodule LivebookWeb.SessionLive do
     """
   end
 
-  defp session_status(%{status: :evaluating} = assigns) do
+  defp section_status(%{status: :evaluating} = assigns) do
     ~H"""
     <button data-el-focus-cell-button data-target={@cell_id}>
-      <.status_indicator circle_class="bg-blue-500" animated_circle_class="bg-blue-400">
-      </.status_indicator>
+      <.status_indicator variant={:progressing} />
     </button>
     """
   end
 
-  defp session_status(%{status: :stale} = assigns) do
+  defp section_status(%{status: :stale} = assigns) do
     ~H"""
     <button data-el-focus-cell-button data-target={@cell_id}>
-      <.status_indicator circle_class="bg-yellow-bright-200"></.status_indicator>
+      <.status_indicator variant={:warning} />
     </button>
     """
   end
 
-  defp session_status(assigns), do: ~H""
-
-  defp status_indicator(assigns) do
-    assigns = assign_new(assigns, :animated_circle_class, fn -> nil end)
-
-    ~H"""
-    <div class="flex items-center space-x-1">
-      <span class="flex relative h-3 w-3">
-        <span
-          :if={@animated_circle_class}
-          class={[
-            @animated_circle_class,
-            "animate-ping absolute inline-flex h-3 w-3 rounded-full opacity-75"
-          ]}
-        >
-        </span>
-        <span class={[@circle_class, "relative inline-flex rounded-full h-3 w-3"]}></span>
-      </span>
-    </div>
-    """
-  end
+  defp section_status(assigns), do: ~H""
 
   defp settings_component_for(%Cell.Code{}),
     do: LivebookWeb.SessionLive.CodeCellSettingsComponent
@@ -1339,6 +1166,17 @@ defmodule LivebookWeb.SessionLive do
     {:noreply, create_session(socket, notebook: notebook, copy_images_from: images_dir)}
   end
 
+  def handle_event("star_notebook", %{}, socket) do
+    data = socket.private.data
+    Livebook.NotebookManager.add_starred_notebook(data.file, data.notebook.name)
+    {:noreply, socket}
+  end
+
+  def handle_event("unstar_notebook", %{}, socket) do
+    Livebook.NotebookManager.remove_starred_notebook(socket.private.data.file)
+    {:noreply, socket}
+  end
+
   def handle_event("erase_outputs", %{}, socket) do
     Session.erase_outputs(socket.assigns.session.pid)
     {:noreply, socket}
@@ -1376,48 +1214,15 @@ defmodule LivebookWeb.SessionLive do
      )}
   end
 
-  def handle_event("toggle_secret", %{"data" => data}, socket) do
-    if data["toggled"] == "true" do
-      secret = %{name: data["name"], value: data["value"]}
-      Livebook.Session.set_secret(socket.assigns.session.pid, secret)
-    else
-      Livebook.Session.unset_secret(socket.assigns.session.pid, data["name"])
-    end
+  def handle_event("select_hub", %{"id" => id}, socket) do
+    Session.set_notebook_hub(socket.assigns.session.pid, id)
 
-    {:noreply, socket}
-  end
-
-  def handle_event("delete_session_secret", %{"secret_name" => secret_name}, socket) do
-    Livebook.Session.unset_secret(socket.assigns.session.pid, secret_name)
-    {:noreply, socket}
-  end
-
-  def handle_event("delete_app_secret", %{"secret_name" => secret_name}, socket) do
-    Livebook.Secrets.unset_secret(secret_name)
     {:noreply, socket}
   end
 
   @impl true
   def handle_info({:operation, operation}, socket) do
     {:noreply, handle_operation(socket, operation)}
-  end
-
-  def handle_info({:secret_created, %{origin: {:hub, _id}}}, socket) do
-    {:noreply,
-     socket
-     |> assign(saved_secrets: get_saved_secrets())
-     |> put_flash(:info, "A new secret has been created on your Livebook Enterprise")}
-  end
-
-  def handle_info({:secret_updated, %{origin: {:hub, _id}}}, socket) do
-    {:noreply,
-     socket
-     |> assign(saved_secrets: get_saved_secrets())
-     |> put_flash(:info, "An existing secret has been updated on your Livebook Enterprise")}
-  end
-
-  def handle_info(:hubs_changed, socket) do
-    {:noreply, assign(socket, saved_secrets: get_saved_secrets())}
   end
 
   def handle_info({:error, error}, socket) do
@@ -1443,6 +1248,14 @@ defmodule LivebookWeb.SessionLive do
      socket
      |> assign_private(data: data)
      |> assign(data_view: data_to_view(data))}
+  end
+
+  def handle_info({:hydrate_cell_source_digest, cell_id, tag, digest}, socket) do
+    data = socket.private.data
+    data = put_in(data.cell_infos[cell_id].sources[tag].digest, digest)
+    # We don't recompute data_view, because for the cell indicator we
+    # still compute the digest on the client side
+    {:noreply, assign_private(socket, data: data)}
   end
 
   def handle_info({:session_updated, session}, socket) do
@@ -1502,24 +1315,12 @@ defmodule LivebookWeb.SessionLive do
     handle_event("insert_cell_below", params, socket)
   end
 
-  def handle_info({:set_secret, secret}, socket) do
-    saved_secrets =
-      Enum.reject(
-        socket.assigns.saved_secrets,
-        &(&1.name == secret.name and &1.origin == secret.origin)
-      )
-
-    {:noreply, assign(socket, saved_secrets: [secret | saved_secrets])}
+  def handle_info({:push_patch, to}, socket) do
+    {:noreply, push_patch(socket, to: to)}
   end
 
-  def handle_info({:unset_secret, secret}, socket) do
-    saved_secrets =
-      Enum.reject(
-        socket.assigns.saved_secrets,
-        &(&1.name == secret.name and &1.origin == secret.origin)
-      )
-
-    {:noreply, assign(socket, saved_secrets: saved_secrets)}
+  def handle_info({:starred_notebooks_updated, starred_notebooks}, socket) do
+    {:noreply, assign(socket, starred_files: starred_files(starred_notebooks))}
   end
 
   def handle_info(_message, socket), do: {:noreply, socket}
@@ -1961,6 +1762,10 @@ defmodule LivebookWeb.SessionLive do
     end
   end
 
+  defp starred_files(starred_notebooks) do
+    for info <- starred_notebooks, into: MapSet.new(), do: info.file
+  end
+
   # Builds view-specific structure of data by cherry-picking
   # only the relevant attributes.
   # We then use `@data_view` in the templates and consequently
@@ -1994,6 +1799,8 @@ defmodule LivebookWeb.SessionLive do
       section_views: section_views(data.notebook.sections, data),
       bin_entries: data.bin_entries,
       secrets: data.secrets,
+      hub: Livebook.Hubs.fetch_hub!(data.notebook.hub_id),
+      hub_secrets: data.hub_secrets,
       apps_status: apps_status(data),
       app_settings: data.notebook.app_settings,
       apps: data.apps
@@ -2265,27 +2072,10 @@ defmodule LivebookWeb.SessionLive do
     end)
   end
 
-  defp secret_toggled?(secret, secrets) do
-    Map.has_key?(secrets, secret.name) and secrets[secret.name] == secret.value
-  end
-
-  defp get_saved_secrets do
-    Enum.sort(Hubs.get_secrets() ++ Secrets.get_secrets())
-  end
-
-  defp secret_label(%{origin: {:hub, id}}, hubs), do: fetch_hub!(id, hubs).emoji
-  defp secret_label(_, _), do: nil
-
-  defp secret_tooltip(%{origin: {:hub, id}}, hubs), do: fetch_hub!(id, hubs).name
-  defp secret_tooltip(_, _), do: nil
-
-  defp fetch_hub!(id, hubs) do
-    Enum.find(hubs, &(&1.id == id)) || raise "unknown hub id: #{id}"
-  end
-
   defp app_status_color(nil), do: "bg-gray-400"
   defp app_status_color(:booting), do: "bg-blue-500"
   defp app_status_color(:running), do: "bg-green-bright-400"
   defp app_status_color(:error), do: "bg-red-400"
   defp app_status_color(:shutting_down), do: "bg-gray-500"
+  defp app_status_color(:stopped), do: "bg-gray-500"
 end

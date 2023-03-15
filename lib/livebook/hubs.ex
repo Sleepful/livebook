@@ -3,7 +3,6 @@ defmodule Livebook.Hubs do
 
   alias Livebook.Storage
   alias Livebook.Hubs.{Broadcasts, Enterprise, Fly, Metadata, Personal, Provider}
-  alias Livebook.Secrets
   alias Livebook.Secrets.Secret
 
   @namespace :hubs
@@ -47,8 +46,8 @@ defmodule Livebook.Hubs do
   @doc """
   Gets one hub from storage.
   """
-  @spec get_hub(String.t()) :: {:ok, Provider.t()} | :error
-  def get_hub(id) do
+  @spec fetch_hub(String.t()) :: {:ok, Provider.t()} | :error
+  def fetch_hub(id) do
     with {:ok, data} <- Storage.fetch(@namespace, id) do
       {:ok, to_struct(data)}
     end
@@ -93,7 +92,7 @@ defmodule Livebook.Hubs do
   """
   @spec delete_hub(String.t()) :: :ok
   def delete_hub(id) do
-    with {:ok, hub} <- get_hub(id) do
+    with {:ok, hub} <- fetch_hub(id) do
       true = Provider.type(hub) != "personal"
       :ok = Broadcasts.hub_changed()
       :ok = Storage.delete(@namespace, id)
@@ -181,9 +180,7 @@ defmodule Livebook.Hubs do
   """
   @spec connect_hubs() :: :ok
   def connect_hubs do
-    for hub <- get_hubs(),
-        capability?(hub, [:connect]),
-        do: connect_hub(hub)
+    for hub <- get_hubs([:connect]), do: connect_hub(hub)
 
     :ok
   end
@@ -203,30 +200,75 @@ defmodule Livebook.Hubs do
   """
   @spec get_secrets() :: list(Secret.t())
   def get_secrets do
-    for hub <- get_hubs([:secrets]),
+    for hub <- get_hubs([:list_secrets]),
         secret <- Provider.get_secrets(hub),
         do: secret
   end
 
   @doc """
-  Creates a secret for given hub.
+  Gets a list of secrets for given hub.
   """
-  @spec create_secret(Secret.t()) :: :ok | {:error, list({String.t(), list(String.t())})}
-  def create_secret(%Secret{origin: {:hub, id}} = secret) do
-    case get_hub(id) do
-      {:ok, hub} ->
-        if capability?(hub, [:secrets]) do
-          Provider.create_secret(hub, secret)
-        else
-          {:error, Secrets.add_secret_error(secret, :origin, "is invalid")}
-        end
-
-      :error ->
-        {:error, Secrets.add_secret_error(secret, :origin, "is invalid")}
+  @spec get_secrets(Provider.t()) :: list(Secret.t())
+  def get_secrets(hub) do
+    if capability?(hub, [:list_secrets]) do
+      Provider.get_secrets(hub)
+    else
+      []
     end
   end
 
-  defp capability?(hub, capabilities) do
+  @doc """
+  Creates a secret for given hub.
+  """
+  @spec create_secret(Provider.t(), Secret.t()) ::
+          :ok | {:error, list({atom(), list(String.t())})}
+  def create_secret(hub, %Secret{} = secret) do
+    true = capability?(hub, [:create_secret])
+
+    Provider.create_secret(hub, secret)
+  end
+
+  @doc """
+  Updates a secret for given hub.
+  """
+  @spec update_secret(Provider.t(), Secret.t()) ::
+          :ok | {:error, list({atom(), list(String.t())})}
+  def update_secret(hub, %Secret{readonly: false} = secret) do
+    Provider.update_secret(hub, secret)
+  end
+
+  @doc """
+  Deletes a secret for given hub.
+  """
+  @spec delete_secret(Provider.t(), Secret.t()) ::
+          :ok | {:error, list({atom(), list(String.t())})}
+  def delete_secret(hub, %Secret{readonly: false} = secret) do
+    Provider.delete_secret(hub, secret)
+  end
+
+  @doc """
+  Generates a notebook stamp.
+  """
+  @spec notebook_stamp(Provider.t(), iodata(), map()) ::
+          {:ok, Provider.notebook_stamp()} | :skip | :error
+  def notebook_stamp(hub, notebook_source, metadata) do
+    Provider.notebook_stamp(hub, notebook_source, metadata)
+  end
+
+  @doc """
+  Verifies a notebook stamp and returns the decrypted metadata.
+  """
+  @spec verify_notebook_stamp(Provider.t(), iodata(), Provider.notebook_stamp()) ::
+          {:ok, metadata :: map()} | :error
+  def verify_notebook_stamp(hub, notebook_source, stamp) do
+    Provider.verify_notebook_stamp(hub, notebook_source, stamp)
+  end
+
+  @doc """
+  Checks the hub capability for given hub.
+  """
+  @spec capability?(Provider.t(), list(atom())) :: boolean()
+  def capability?(hub, capabilities) do
     capabilities -- Provider.capabilities(hub) == []
   end
 end

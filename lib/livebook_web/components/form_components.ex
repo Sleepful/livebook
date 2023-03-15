@@ -14,6 +14,7 @@ defmodule LivebookWeb.FormComponents do
   attr :value, :any
   attr :errors, :list, default: []
   attr :field, Phoenix.HTML.FormField, doc: "a form field struct retrieved from the form"
+  attr :class, :string, default: nil
 
   attr :rest, :global, include: ~w(autocomplete readonly disabled)
 
@@ -27,7 +28,7 @@ defmodule LivebookWeb.FormComponents do
         name={@name}
         id={@id || @name}
         value={Phoenix.HTML.Form.normalize_value("text", @value)}
-        class="input"
+        class={["input", @class]}
         {@rest}
       />
     </.field_wrapper>
@@ -104,7 +105,7 @@ defmodule LivebookWeb.FormComponents do
           name={@name}
           id={@id || @name}
           value={Phoenix.HTML.Form.normalize_value("text", @value)}
-          class="input"
+          class="input pr-8"
           {@rest}
         />
       </.with_password_toggle>
@@ -187,19 +188,69 @@ defmodule LivebookWeb.FormComponents do
         >
           <%= @label %>
         </span>
-        <label class={["switch-button", @disabled && "switch-button--disabled"]}>
+        <label class={[
+          "relative inline-block w-14 h-7 select-none",
+          @disabled && "pointer-events-none opacity-50"
+        ]}>
           <input type="hidden" value={@unchecked_value} name={@name} />
           <input
             type="checkbox"
             value={@checked_value}
-            class="switch-button__checkbox"
+            class={[
+              "appearance-none absolute block w-7 h-7 rounded-full bg-white border-[5px] border-gray-200 cursor-pointer transition-all duration-300",
+              "peer checked:bg-white checked:border-blue-600 checked:translate-x-full"
+            ]}
             name={@name}
+            id={@id || @name}
             checked={to_string(@value) == @checked_value}
             {@rest}
           />
-          <div class="switch-button__bg"></div>
+          <div class={[
+            "block h-full w-full rounded-full bg-gray-200 cursor-pointer transition-all duration-300",
+            "peer-checked:bg-blue-600"
+          ]}>
+          </div>
         </label>
       </div>
+      <.error :for={msg <- @errors}><%= msg %></.error>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders checkbox input with label and error messages.
+  """
+  attr :id, :any, default: nil
+  attr :name, :any
+  attr :label, :string, default: nil
+  attr :value, :any
+  attr :errors, :list, default: []
+  attr :field, Phoenix.HTML.FormField, doc: "a form field struct retrieved from the form"
+
+  attr :disabled, :boolean, default: false
+  attr :checked_value, :string, default: "true"
+  attr :unchecked_value, :string, default: "false"
+
+  attr :rest, :global
+
+  def checkbox_field(assigns) do
+    assigns = assigns_from_field(assigns)
+
+    ~H"""
+    <div phx-feedback-for={@name} class={[@errors != [] && "show-errors"]}>
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input type="hidden" value={@unchecked_value} name={@name} />
+        <input
+          type="checkbox"
+          class="checkbox"
+          value={@checked_value}
+          name={@name}
+          id={@id || @name}
+          checked={to_string(@value) == @checked_value}
+          {@rest}
+        />
+        <span :if={@label}><%= @label %></span>
+      </label>
       <.error :for={msg <- @errors}><%= msg %></.error>
     </div>
     """
@@ -224,12 +275,12 @@ defmodule LivebookWeb.FormComponents do
 
     ~H"""
     <div phx-feedback-for={@name} class={[@errors != [] && "show-errors"]}>
-      <div class="flex items-center gap-2 text-gray-600">
-        <label :for={{value, description} <- @options}>
+      <div class="flex gap-4 text-gray-600">
+        <label :for={{value, description} <- @options} class="flex items-center gap-2 cursor-pointer">
           <input
             type="radio"
+            class="radio"
             name={@name}
-            id={@id || @name}
             value={value}
             checked={to_string(@value) == value}
             {@rest}
@@ -259,30 +310,19 @@ defmodule LivebookWeb.FormComponents do
 
     ~H"""
     <.field_wrapper id={@id} name={@name} label={@label} errors={@errors}>
-      <div class="flex border-[1px] bg-gray-50 rounded-lg space-x-4 items-center">
-        <div
-          id={"#{@id}-picker"}
-          class="grid grid-cols-1 md:grid-cols-3 w-full"
-          phx-hook="EmojiPicker"
-        >
-          <div class="place-content-start">
-            <div class="p-1 pl-3">
-              <span id={"#{@id}-preview"} data-emoji-preview><%= @value %></span>
-            </div>
+      <div class="flex border bg-gray-50 rounded-lg space-x-4 items-center">
+        <div id={"#{@id}-picker"} class="flex w-full" phx-hook="EmojiPicker">
+          <div class="grow p-1 pl-3">
+            <span id={"#{@id}-preview"} data-emoji-preview><%= @value %></span>
           </div>
-
-          <div />
-
-          <div class="flex items-center place-content-end">
-            <button
-              id={"#{@id}-button"}
-              type="button"
-              data-emoji-button
-              class="p-1 pl-3 pr-3 rounded-tr-lg rounded-br-lg bg-gray-50 hover:bg-gray-100 active:bg-gray-200 border-l-[1px] bg-white flex justify-center items-center cursor-pointer"
-            >
-              <.remix_icon icon="emotion-line" class="text-xl" />
-            </button>
-          </div>
+          <button
+            id={"#{@id}-button"}
+            type="button"
+            data-emoji-button
+            class="p-1 pl-3 pr-3 rounded-tr-lg rounded-br-lg bg-gray-50 hover:bg-gray-100 active:bg-gray-200 border-l-[1px] bg-white flex justify-center items-center cursor-pointer"
+          >
+            <.remix_icon icon="emotion-line" class="text-xl" />
+          </button>
           <input
             type="hidden"
             name={@name}
@@ -383,7 +423,7 @@ defmodule LivebookWeb.FormComponents do
 
   def error(assigns) do
     ~H"""
-    <p class="text-red-600 text-sm hidden phx-form-error:block">
+    <p class="mt-0.5 text-red-600 text-sm hidden phx-form-error:block">
       <%= render_slot(@inner_block) %>
     </p>
     """

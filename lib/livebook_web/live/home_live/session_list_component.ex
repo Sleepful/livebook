@@ -57,11 +57,10 @@ defmodule LivebookWeb.HomeLive.SessionListComponent do
                 <.remix_icon icon="arrow-down-s-line" class="text-lg leading-none align-middle ml-1" />
               </button>
             </:toggle>
-            <:content>
+            <.menu_item :for={order_by <- ["date", "title", "memory"]}>
               <button
-                :for={order_by <- ["date", "title", "memory"]}
                 class={
-                    "menu-item #{if order_by == @order_by, do: "text-gray-900", else: "text-gray-500"}"
+                    "#{if order_by == @order_by, do: "text-gray-900", else: "text-gray-500"}"
                   }
                 type="button"
                 role="menuitem"
@@ -71,40 +70,35 @@ defmodule LivebookWeb.HomeLive.SessionListComponent do
                 }
               >
                 <.remix_icon icon={order_by_icon(order_by)} />
-                <span class="font-medium"><%= order_by_label(order_by) %></span>
+                <span><%= order_by_label(order_by) %></span>
               </button>
-            </:content>
+            </.menu_item>
           </.menu>
         </div>
       </div>
-      <.session_list sessions={@sessions} show_autosave_note?={@show_autosave_note?} myself={@myself} />
+      <.session_list
+        sessions={@sessions}
+        starred_notebooks={@starred_notebooks}
+        show_autosave_note?={@show_autosave_note?}
+        myself={@myself}
+      />
     </form>
     """
   end
 
   defp session_list(%{sessions: []} = assigns) do
     ~H"""
-    <div class="mt-4 p-5 flex space-x-4 items-center border border-gray-200 rounded-lg">
-      <div>
-        <.remix_icon icon="windy-line" class="text-gray-400 text-xl" />
-      </div>
-      <div class="grow flex items-center justify-between">
-        <div class="text-gray-600">
-          You do not have any running sessions.
-          <%= if @show_autosave_note? do %>
-            <br />
-            Looking for unsaved notebooks? <a
-              class="font-semibold"
-              href="#"
-              phx-click="open_autosave_directory"
-            >Browse them here</a>.
-          <% end %>
-        </div>
-        <button class="button-base button-blue" phx-click="new">
-          New notebook
-        </button>
-      </div>
-    </div>
+    <.no_entries>
+      You do not have any running sessions.
+      <%= if @show_autosave_note? do %>
+        <br />
+        Looking for unsaved notebooks? <.link
+          class="font-semibold"
+          navigate={~p"/open/file?autosave=true"}
+          phx-no-format
+        >Browse them here</.link>.
+      <% end %>
+    </.no_entries>
     """
   end
 
@@ -122,7 +116,7 @@ defmodule LivebookWeb.HomeLive.SessionListComponent do
             name="session_ids[]"
             value={session.id}
             aria-label={session.notebook_name}
-            class="checkbox-base hidden mr-3"
+            class="checkbox hidden mr-3"
             data-el-bulk-edit-member
             phx-click={JS.dispatch("lb:session_list:on_selection_change")}
           />
@@ -154,18 +148,18 @@ defmodule LivebookWeb.HomeLive.SessionListComponent do
               <.remix_icon icon="more-2-fill" class="text-xl" />
             </button>
           </:toggle>
-          <:content>
+          <.menu_item>
             <a
-              class="menu-item text-gray-500"
               role="menuitem"
               href={~p"/sessions/#{session.id}/export/download/livemd?include_outputs=false"}
               download
             >
-              <.remix_icon icon="download-2-line" class="text-lg" />
-              <span class="font-medium">Download source</span>
+              <.remix_icon icon="download-2-line" />
+              <span>Download source</span>
             </a>
+          </.menu_item>
+          <.menu_item>
             <button
-              class="menu-item text-gray-500"
               type="button"
               role="menuitem"
               phx-click="fork_session"
@@ -173,38 +167,63 @@ defmodule LivebookWeb.HomeLive.SessionListComponent do
               phx-value-id={session.id}
             >
               <.remix_icon icon="git-branch-line" />
-              <span class="font-medium">Fork</span>
+              <span>Fork</span>
             </button>
-            <a
-              class="menu-item text-gray-500"
-              role="menuitem"
-              href={live_dashboard_process_path(session.pid)}
-              target="_blank"
-            >
+          </.menu_item>
+          <span
+            class="tooltip left"
+            data-tooltip={session.file == nil && "Save this notebook before starring it"}
+          >
+            <.menu_item disabled={session.file == nil}>
+              <%= if notebook_starred?(session, @starred_notebooks) do %>
+                <button
+                  type="button"
+                  role="menuitem"
+                  phx-click="unstar_notebook"
+                  phx-target={@myself}
+                  phx-value-id={session.id}
+                >
+                  <.remix_icon icon="star-fill" />
+                  <span>Unstar notebook</span>
+                </button>
+              <% else %>
+                <button
+                  type="button"
+                  role="menuitem"
+                  phx-click="star_notebook"
+                  phx-target={@myself}
+                  phx-value-id={session.id}
+                >
+                  <.remix_icon icon="star-line" />
+                  <span>Star notebook</span>
+                </button>
+              <% end %>
+            </.menu_item>
+          </span>
+          <.menu_item>
+            <a role="menuitem" href={live_dashboard_process_path(session.pid)} target="_blank">
               <.remix_icon icon="dashboard-2-line" />
-              <span class="font-medium">See on Dashboard</span>
+              <span>See on Dashboard</span>
             </a>
+          </.menu_item>
+          <.menu_item disabled={!session.memory_usage.runtime}>
             <button
-              class="menu-item text-gray-500"
               type="button"
-              disabled={!session.memory_usage.runtime}
               role="menuitem"
               phx-target={@myself}
               phx-click={toggle_edit(:off) |> JS.push("disconnect_runtime")}
               phx-value-id={session.id}
             >
               <.remix_icon icon="shut-down-line" />
-              <span class="font-medium">Disconnect runtime</span>
+              <span>Disconnect runtime</span>
             </button>
-            <.link
-              patch={~p"/home/sessions/#{session.id}/close"}
-              class="menu-item text-red-600"
-              role="menuitem"
-            >
+          </.menu_item>
+          <.menu_item variant={:danger}>
+            <.link patch={~p"/home/sessions/#{session.id}/close"} role="menuitem">
               <.remix_icon icon="close-circle-line" />
-              <span class="font-medium">Close</span>
+              <span>Close</span>
             </.link>
-          </:content>
+          </.menu_item>
         </.menu>
       </div>
     </div>
@@ -278,37 +297,43 @@ defmodule LivebookWeb.HomeLive.SessionListComponent do
             <.remix_icon icon="arrow-down-s-line" class="text-lg leading-none align-middle ml-1" />
           </button>
         </:toggle>
-        <:content>
-          <button class="menu-item text-gray-600" phx-click={toggle_edit(:off)} type="button">
+        <.menu_item>
+          <button class="text-gray-600" phx-click={toggle_edit(:off)} type="button">
             <.remix_icon icon="close-line" />
-            <span class="font-medium">Cancel</span>
+            <span>Cancel</span>
           </button>
-          <button class="menu-item text-gray-600" phx-click={select_all()} type="button">
+        </.menu_item>
+        <.menu_item>
+          <button class="text-gray-600" phx-click={select_all()} type="button">
             <.remix_icon icon="checkbox-multiple-line" />
-            <span class="font-medium">Select all</span>
+            <span>Select all</span>
           </button>
+        </.menu_item>
+        <.menu_item>
           <button
-            class="menu-item text-gray-600"
+            class="text-gray-600"
             name="disconnect"
             type="button"
             data-keep-attribute="disabled"
             phx-click={set_action("disconnect")}
           >
             <.remix_icon icon="shut-down-line" />
-            <span class="font-medium">Disconnect runtime</span>
+            <span>Disconnect runtime</span>
           </button>
+        </.menu_item>
+        <.menu_item>
           <button
-            class="menu-item text-red-600"
+            class="text-red-600"
             name="close_all"
             type="button"
             data-keep-attribute="disabled"
             phx-click={set_action("close_all")}
           >
             <.remix_icon icon="close-circle-line" />
-            <span class="font-medium">Close sessions</span>
+            <span>Close sessions</span>
           </button>
           <input id="bulk-action-input" class="hidden" type="text" name="action" />
-        </:content>
+        </.menu_item>
       </.menu>
     </div>
     """
@@ -339,6 +364,18 @@ defmodule LivebookWeb.HomeLive.SessionListComponent do
        copy_images_from: images_dir,
        origin: origin
      )}
+  end
+
+  def handle_event("star_notebook", %{"id" => session_id}, socket) do
+    session = Enum.find(socket.assigns.sessions, &(&1.id == session_id))
+    Livebook.NotebookManager.add_starred_notebook(session.file, session.notebook_name)
+    {:noreply, socket}
+  end
+
+  def handle_event("unstar_notebook", %{"id" => session_id}, socket) do
+    session = Enum.find(socket.assigns.sessions, &(&1.id == session_id))
+    Livebook.NotebookManager.remove_starred_notebook(session.file)
+    {:noreply, socket}
   end
 
   def handle_event("disconnect_runtime", %{"id" => session_id}, socket) do
@@ -401,5 +438,11 @@ defmodule LivebookWeb.HomeLive.SessionListComponent do
   defp set_action(action) do
     JS.dispatch("lb:set_value", to: "#bulk-action-input", detail: %{value: action})
     |> JS.dispatch("submit", to: "#bulk-action-form")
+  end
+
+  defp notebook_starred?(%{file: nil} = _session, _starred_notebooks), do: false
+
+  defp notebook_starred?(session, starred_notebooks) do
+    Enum.any?(starred_notebooks, &(&1.file == session.file))
   end
 end

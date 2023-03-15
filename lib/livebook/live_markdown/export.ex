@@ -11,8 +11,13 @@ defmodule Livebook.LiveMarkdown.Export do
     ctx = %{include_outputs?: include_outputs?, js_ref_with_data: js_ref_with_data}
 
     iodata = render_notebook(notebook, ctx)
+
     # Add trailing newline
-    IO.iodata_to_binary([iodata, "\n"])
+    notebook_source = [iodata, "\n"]
+
+    notebook_footer = render_notebook_footer(notebook, notebook_source)
+
+    IO.iodata_to_binary([notebook_source, notebook_footer])
   end
 
   defp collect_js_output_data(notebook) do
@@ -68,8 +73,26 @@ defmodule Livebook.LiveMarkdown.Export do
   end
 
   defp notebook_metadata(notebook) do
-    keys = [:persist_outputs, :autosave_interval_s]
-    put_unless_default(%{}, Map.take(notebook, keys), Map.take(Notebook.new(), keys))
+    keys = [:persist_outputs, :autosave_interval_s, :hub_id]
+    metadata = put_unless_default(%{}, Map.take(notebook, keys), Map.take(Notebook.new(), keys))
+
+    app_settings_metadata = app_settings_metadata(notebook.app_settings)
+
+    if app_settings_metadata == %{} do
+      metadata
+    else
+      Map.put(metadata, :app_settings, app_settings_metadata)
+    end
+  end
+
+  defp app_settings_metadata(app_settings) do
+    keys = [:slug, :access_type]
+
+    put_unless_default(
+      %{},
+      Map.take(app_settings, keys),
+      Map.take(Notebook.AppSettings.new(), keys)
+    )
   end
 
   defp render_section(section, notebook, ctx) do
@@ -227,7 +250,7 @@ defmodule Livebook.LiveMarkdown.Export do
 
   defp render_metadata(metadata) do
     metadata_json = Jason.encode!(metadata)
-    "<!-- livebook:#{metadata_json} -->"
+    ["<!-- livebook:", metadata_json, " -->"]
   end
 
   defp prepend_metadata(iodata, metadata) when metadata == %{}, do: iodata
@@ -293,5 +316,23 @@ defmodule Livebook.LiveMarkdown.Export do
     |> Livebook.Utils.ANSI.parse_ansi_string()
     |> elem(0)
     |> Enum.map(fn {_modifiers, string} -> string end)
+  end
+
+  defp render_notebook_footer(notebook, notebook_source) do
+    metadata = notebook_stamp_metadata(notebook)
+
+    with {:ok, hub} <- Livebook.Hubs.fetch_hub(notebook.hub_id),
+         {:ok, stamp} <- Livebook.Hubs.notebook_stamp(hub, notebook_source, metadata) do
+      offset = IO.iodata_length(notebook_source)
+      json = Jason.encode!(%{"offset" => offset, "stamp" => stamp})
+      ["\n", "<!-- livebook:", json, " -->", "\n"]
+    else
+      _ -> []
+    end
+  end
+
+  defp notebook_stamp_metadata(notebook) do
+    keys = [:hub_secret_names]
+    put_unless_default(%{}, Map.take(notebook, keys), Map.take(Notebook.new(), keys))
   end
 end

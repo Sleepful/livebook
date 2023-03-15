@@ -10,9 +10,9 @@ defmodule Livebook.Settings do
   alias Livebook.Settings.EnvVar
 
   @typedoc """
-  An id that is used for filesystem's manipulation, either insertion or removal.
+  An id that is used for file system's manipulation, either insertion or removal.
   """
-  @type file_system_id :: String.t()
+  @type file_system_id :: Livebook.Utils.id()
 
   @doc """
   Returns the current autosave path.
@@ -50,60 +50,50 @@ defmodule Livebook.Settings do
   end
 
   @doc """
-  Returns all known file systems with their associated ids.
-
-  In case of the local filesystem the id resolves to `"local"`.
+  Returns all known file systems.
   """
-  @spec file_systems() :: [{file_system_id(), Filesystem.t()}]
+  @spec file_systems() :: list(FileSystem.t())
   def file_systems() do
     restored_file_systems =
       Storage.all(:filesystem)
       |> Enum.sort_by(&Map.get(&1, :order, System.os_time()))
-      |> Enum.map(fn %{id: fs_id} = raw_fs ->
-        {fs_id, storage_to_fs(raw_fs)}
-      end)
+      |> Enum.map(&storage_to_fs/1)
 
-    [{"local", Livebook.Config.local_filesystem()} | restored_file_systems]
+    [Livebook.Config.local_file_system() | restored_file_systems]
   end
 
   @doc """
   Saves a new file system to the configured ones.
   """
-  @spec save_filesystem(FileSystem.t()) :: file_system_id()
-  def save_filesystem(%FileSystem.S3{} = file_system) do
+  @spec save_file_system(FileSystem.t()) :: :ok
+  def save_file_system(%FileSystem.S3{} = file_system) do
     attributes =
       file_system
       |> FileSystem.S3.to_config()
       |> Map.to_list()
 
-    id = Livebook.Utils.random_short_id()
-
-    :ok =
-      Storage.insert(:filesystem, id, [{:type, "s3"}, {:order, System.os_time()} | attributes])
-
-    id
+    attrs = [{:type, "s3"}, {:order, System.os_time()} | attributes]
+    :ok = Storage.insert(:filesystem, file_system.id, attrs)
   end
 
   @doc """
   Removes the given file system from the configured ones.
   """
   @spec remove_file_system(file_system_id()) :: :ok
-  def remove_file_system(filesystem_id) do
-    if default_file_system_id() == filesystem_id do
-      storage().delete_key(:settings, "global", :default_file_system_id)
+  def remove_file_system(file_system_id) do
+    if default_file_system_id() == file_system_id do
+      Livebook.Storage.delete_key(:settings, "global", :default_file_system_id)
     end
 
-    storage().delete(:filesystem, filesystem_id)
-  end
+    Livebook.NotebookManager.remove_file_system(file_system_id)
 
-  defp storage() do
-    Livebook.Storage.current()
+    Livebook.Storage.delete(:filesystem, file_system_id)
   end
 
   defp storage_to_fs(%{type: "s3"} = config) do
     case FileSystem.S3.from_config(config) do
       {:ok, fs} -> fs
-      {:error, message} -> raise ArgumentError, "invalid S3 filesystem: #{message}"
+      {:error, message} -> raise ArgumentError, "invalid S3 file system: #{message}"
     end
   end
 
@@ -161,8 +151,7 @@ defmodule Livebook.Settings do
   With success, notifies interested processes about environment variable
   data change. Otherwise, it will return an error tuple with changeset.
   """
-  @spec set_env_var(EnvVar.t(), map()) ::
-          {:ok, EnvVar.t()} | {:error, Ecto.Changeset.t()}
+  @spec set_env_var(EnvVar.t(), map()) :: {:ok, EnvVar.t()} | {:error, Ecto.Changeset.t()}
   def set_env_var(%EnvVar{} = env_var \\ %EnvVar{}, attrs) do
     changeset = EnvVar.changeset(env_var, attrs)
 
@@ -200,9 +189,7 @@ defmodule Livebook.Settings do
   """
   @spec change_env_var(EnvVar.t(), map()) :: Ecto.Changeset.t()
   def change_env_var(%EnvVar{} = env_var, attrs \\ %{}) do
-    env_var
-    |> EnvVar.changeset(attrs)
-    |> Map.put(:action, :validate)
+    EnvVar.changeset(env_var, attrs)
   end
 
   @doc """
@@ -239,7 +226,7 @@ defmodule Livebook.Settings do
   """
   @spec set_default_file_system(file_system_id()) :: :ok
   def set_default_file_system(file_system_id) do
-    storage().insert(:settings, "global", default_file_system_id: file_system_id)
+    Livebook.Storage.insert(:settings, "global", default_file_system_id: file_system_id)
   end
 
   @doc """
@@ -247,9 +234,9 @@ defmodule Livebook.Settings do
   """
   @spec default_file_system() :: Filesystem.t()
   def default_file_system() do
-    case storage().fetch(:filesystem, default_file_system_id()) do
+    case Livebook.Storage.fetch(:filesystem, default_file_system_id()) do
       {:ok, file} -> storage_to_fs(file)
-      :error -> Livebook.Config.local_filesystem()
+      :error -> Livebook.Config.local_file_system()
     end
   end
 
@@ -258,7 +245,7 @@ defmodule Livebook.Settings do
   """
   @spec default_file_system_id() :: file_system_id()
   def default_file_system_id() do
-    case storage().fetch_key(:settings, "global", :default_file_system_id) do
+    case Livebook.Storage.fetch_key(:settings, "global", :default_file_system_id) do
       {:ok, default_file_system_id} -> default_file_system_id
       :error -> "local"
     end

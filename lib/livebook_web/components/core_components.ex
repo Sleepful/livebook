@@ -121,6 +121,7 @@ defmodule LivebookWeb.CoreComponents do
   attr :patch, :string, default: nil
   attr :navigate, :string, default: nil
   attr :class, :string, default: nil
+  attr :width, :atom, values: [:small, :medium, :big, :large], required: true
   attr :rest, :global
 
   slot :inner_block, required: true
@@ -140,7 +141,11 @@ defmodule LivebookWeb.CoreComponents do
         <!-- Modal box -->
         <.focus_wrap
           id={"#{@id}-content"}
-          class={["relative max-h-full overflow-y-auto bg-white rounded-lg shadow-xl", @class]}
+          class={[
+            "relative max-h-full overflow-y-auto bg-white rounded-lg shadow-xl",
+            "w-full",
+            modal_width_class(@width)
+          ]}
           role="dialog"
           aria-modal="true"
           tabindex="0"
@@ -166,6 +171,11 @@ defmodule LivebookWeb.CoreComponents do
     </div>
     """
   end
+
+  defp modal_width_class(:small), do: "max-w-sm"
+  defp modal_width_class(:medium), do: "max-w-xl"
+  defp modal_width_class(:big), do: "max-w-4xl"
+  defp modal_width_class(:large), do: "max-w-6xl"
 
   @doc """
   Shows a modal rendered with `modal/1`.
@@ -197,12 +207,12 @@ defmodule LivebookWeb.CoreComponents do
 
   def confirm_modal(assigns) do
     ~H"""
-    <.modal id={@id} class="w-full max-w-xl" phx-hook="ConfirmModal" data-js-show={show_modal(@id)}>
+    <.modal id={@id} width={:medium} phx-hook="ConfirmModal" data-js-show={show_modal(@id)}>
       <div id={"#{@id}-confirm-content"} class="p-6 flex flex-col" phx-update="ignore">
         <h3 class="text-2xl font-semibold text-gray-800" data-title></h3>
         <p class="mt-8 text-gray-700" data-description></p>
         <label class="mt-6 text-gray-700 flex items-center" data-opt-out>
-          <input class="checkbox-base mr-3" type="checkbox" />
+          <input class="checkbox mr-3" type="checkbox" />
           <span class="text-sm">
             Don't show this message again
           </span>
@@ -304,9 +314,12 @@ defmodule LivebookWeb.CoreComponents do
         <:toggle>
           <button>Open</button>
         </:toggle>
-        <:content>
-          <button class"menu-item" role="menuitem">Option 1</button>
-        </:content>
+        <.menu_item>
+          <button role="menuitem">Option 1</button>
+        </.menu_item>
+        <.menu_item>
+          <button role="menuitem">Option 2</button>
+        </.menu_item>
       </.menu>
 
   """
@@ -326,65 +339,113 @@ defmodule LivebookWeb.CoreComponents do
     doc: "whether secondary click (usually right mouse click) should open the menu"
 
   slot :toggle, required: true
-  slot :content, required: true
+
+  slot :inner_block, required: true
 
   def menu(assigns) do
     ~H"""
-    <div class="menu" id={@id}>
+    <div class="relative" id={@id}>
       <div
-        phx-click={not @disabled && JS.add_class("menu--open", to: "##{@id}")}
+        phx-click={not @disabled && show_menu(@id)}
         data-contextmenu-trigger-click={@secondary_click}
-        phx-window-keydown={JS.remove_class("menu--open", to: "##{@id}")}
+        phx-window-keydown={hide_menu(@id)}
         phx-key="escape"
       >
         <%= render_slot(@toggle) %>
       </div>
-      <div class="menu__overlay" phx-click-away={JS.remove_class("menu--open", to: "##{@id}")}></div>
+      <div id={"#{@id}-overlay"} class="fixed z-[90] inset-0 hidden" phx-click-away={hide_menu(@id)}>
+      </div>
       <menu
-        class={["menu__content", menu_content_class(@position), @distant && "menu__content--distant"]}
+        id={"#{@id}-content"}
+        class={[
+          "absolute z-[100] rounded-lg bg-white flex flex-col py-2 shadow-[0_15px_99px_-0px_rgba(12,24,41,0.15)] hidden",
+          menu_position_class(@position),
+          @distant && menu_distant_class(@position)
+        ]}
         role="menu"
-        phx-click-away={JS.remove_class("menu--open", to: "##{@id}")}
+        phx-click-away={hide_menu(@id)}
       >
-        <%= render_slot(@content) %>
+        <%= render_slot(@inner_block) %>
       </menu>
     </div>
     """
   end
 
-  defp menu_content_class(:top_left), do: "menu__content--top-left"
-  defp menu_content_class(:top_right), do: "menu__content--top-right"
-  defp menu_content_class(:bottom_left), do: "menu__content--bottom-left"
-  defp menu_content_class(:bottom_right), do: "menu__content--bottom-right"
+  defp show_menu(id) do
+    JS.show(to: "##{id}-overlay")
+    |> JS.show(to: "##{id}-content", display: "flex")
+  end
+
+  defp hide_menu(id) do
+    JS.hide(to: "##{id}-overlay")
+    |> JS.hide(to: "##{id}-content")
+  end
+
+  defp menu_position_class(:top_left), do: "top-0 left-0 transform -translate-y-full -mt-1"
+  defp menu_position_class(:top_right), do: "top-0 right-0 transform -translate-y-full -mt-1"
+  defp menu_position_class(:bottom_left), do: "bottom-0 left-0 transform translate-y-full -mb-1"
+  defp menu_position_class(:bottom_right), do: "bottom-0 right-0 transform translate-y-full -mb-1"
+
+  defp menu_distant_class(position) when position in [:top_left, :top_right], do: "-mt-2"
+  defp menu_distant_class(position) when position in [:bottom_left, :bottom_right], do: "-mb-2"
 
   @doc """
-  A menu item that shows a submenu on hover.
+  Wraps a menu item that shows a submenu on hover.
 
   This component should be used within `menu/1` content.
 
   ## Example
 
       <.submenu>
-        <button class"menu-item" role="menuitem">Submenu</button>
-        <:content>
+        <:primary>
+          <button class"menu-item" role="menuitem">Submenu</button>
+        </:primary>
+        <.menu_item>
           <button class"menu-item" role="menuitem">Option 1</button>
-        </:content>
+        </.menu_item>
       </.submenu>
+
   """
+  slot :primary, required: true
   slot :inner_block, required: true
-  slot :content, required: true
 
   def submenu(assigns) do
     ~H"""
-    <div class="submenu">
-      <%= render_slot(@inner_block) %>
-      <div class="submenu__content">
-        <menu class="menu__content relative mt-0">
-          <%= render_slot(@content) %>
+    <div class="group relative">
+      <%= render_slot(@primary) %>
+      <div class="absolute -top-2 right-0 translate-x-full pl-2 hidden group-hover:flex group-focus-within:flex">
+        <menu class="relative mt-0 z-[100] rounded-lg bg-white flex flex-col py-2 shadow-[0_15px_99px_-0px_rgba(12,24,41,0.15)]">
+          <%= render_slot(@inner_block) %>
         </menu>
       </div>
     </div>
     """
   end
+
+  @doc """
+  Renders a menu item used in `menu/1` and `submenu/1`.
+  """
+  attr :disabled, :boolean, default: false
+  attr :variant, :atom, default: :default, values: [:default, :selected, :danger]
+
+  slot :inner_block, required: true
+
+  def menu_item(assigns) do
+    ~H"""
+    <li class={[
+      "w-full",
+      "[&>:first-child]:w-full [&>:first-child]:flex [&>:first-child]:space-x-3 [&>:first-child]:px-5 [&>:first-child]:py-2 [&>:first-child]:items-center [&>:first-child:hover]:bg-gray-100 [&>:first-child:focus]:bg-gray-100 [&>:first-child]:whitespace-nowrap font-medium",
+      menu_item_class(@variant),
+      @disabled && "pointer-events-none opacity-50"
+    ]}>
+      <%= render_slot(@inner_block) %>
+    </li>
+    """
+  end
+
+  defp menu_item_class(:default), do: "text-gray-500"
+  defp menu_item_class(:selected), do: "text-gray-900"
+  defp menu_item_class(:danger), do: "text-red-600"
 
   @doc """
   Renders a text content skeleton.
@@ -490,9 +551,74 @@ defmodule LivebookWeb.CoreComponents do
       |> assign_new(:disabled, fn -> assigns.active end)
 
     ~H"""
-    <button class={["choice-button", @active && "active", @class]} disabled={@disabled} {@rest}>
+    <button
+      class={[
+        "px-5 py-2 rounded-lg border text-gray-700 bg-white border-gray-200",
+        @active && "bg-blue-100 border-blue-600",
+        @class
+      ]}
+      disabled={@disabled}
+      {@rest}
+    >
       <%= render_slot(@inner_block) %>
     </button>
+    """
+  end
+
+  @doc """
+  Renders an status indicator circle.
+  """
+  attr :variant, :atom,
+    required: true,
+    values: [:success, :warning, :error, :inactive, :waiting, :progressing]
+
+  def status_indicator(assigns) do
+    ~H"""
+    <span class="relative flex h-3 w-3">
+      <span
+        :if={animated_circle_class(@variant)}
+        class={[
+          animated_circle_class(@variant),
+          "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
+        ]}
+      >
+      </span>
+      <span class={[circle_class(@variant), "relative inline-flex rounded-full h-3 w-3"]}></span>
+    </span>
+    """
+  end
+
+  defp circle_class(:success), do: "bg-green-bright-400"
+  defp circle_class(:warning), do: "bg-yellow-bright-200"
+  defp circle_class(:error), do: "bg-red-400"
+  defp circle_class(:inactive), do: "bg-gray-500"
+  defp circle_class(:waiting), do: "bg-gray-400"
+  defp circle_class(:progressing), do: "bg-blue-500"
+
+  defp animated_circle_class(:waiting), do: "bg-gray-300"
+  defp animated_circle_class(:progressing), do: "bg-blue-400"
+  defp animated_circle_class(_other), do: nil
+
+  @doc """
+  Renders an informative box as a placeholder for a list.
+  """
+
+  slot :inner_block, required: true
+  slot :actions
+
+  def no_entries(assigns) do
+    ~H"""
+    <div class="p-5 flex space-x-4 items-center border border-gray-200 rounded-lg">
+      <div>
+        <.remix_icon icon="windy-line" class="text-gray-400 text-xl" />
+      </div>
+      <div class="grow flex items-center justify-between">
+        <div class="text-gray-600">
+          <%= render_slot(@inner_block) %>
+        </div>
+        <%= render_slot(@actions) %>
+      </div>
+    </div>
     """
   end
 

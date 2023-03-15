@@ -9,14 +9,14 @@ defmodule LivebookWeb.SettingsLive.FileSystemsComponent do
     <div class="flex flex-col space-y-4">
       <div class="flex flex-col space-y-4">
         <div
-          :for={{file_system_id, file_system} <- @file_systems}
+          :for={file_system <- @file_systems}
           class="flex items-center justify-between border border-gray-200 rounded-lg p-4"
         >
           <div class="flex items-center space-x-12">
             <.file_system_info file_system={file_system} />
           </div>
           <.file_system_actions
-            file_system_id={file_system_id}
+            file_system_id={file_system.id}
             default_file_system_id={@default_file_system_id}
           />
         </div>
@@ -61,23 +61,24 @@ defmodule LivebookWeb.SettingsLive.FileSystemsComponent do
             <.remix_icon icon="more-2-fill" class="text-xl" />
           </button>
         </:toggle>
-        <:content>
+        <.menu_item>
           <button
             :if={@default_file_system_id != @file_system_id}
             type="button"
             role="menuitem"
-            class="menu-item text-gray-600"
             phx-click="make_default_file_system"
             phx-value-id={@file_system_id}
           >
             <.remix_icon icon="star-line" />
-            <span class="font-medium">Make default</span>
+            <span>Make default</span>
           </button>
+        </.menu_item>
+        <.menu_item variant={:danger}>
           <button
             :if={@file_system_id != "local"}
             type="button"
             role="menuitem"
-            class="menu-item text-red-600"
+            class="text-red-600"
             phx-click={
               with_confirm(
                 JS.push("detach_file_system", value: %{id: @file_system_id}),
@@ -90,9 +91,9 @@ defmodule LivebookWeb.SettingsLive.FileSystemsComponent do
             }
           >
             <.remix_icon icon="delete-bin-line" />
-            <span class="font-medium">Detach</span>
+            <span>Detach</span>
           </button>
-        </:content>
+        </.menu_item>
       </.menu>
     </div>
     """

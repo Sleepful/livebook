@@ -40,10 +40,19 @@ Application.put_env(:livebook, Livebook.Runtime.Embedded,
 # Disable autosaving
 Livebook.Storage.insert(:settings, "global", autosave_path: nil)
 
+# Always use the same secret key in tests
+secret_key =
+  "5ji8DpnX761QAWXZwSl-2Y-mdW4yTcMimdOJ8SSxCh44wFE0jEbGBUf-VydKwnTLzBiAUedQKs3X_q1j_3lgrw"
+
+personal_hub = Livebook.Hubs.fetch_hub!(Livebook.Hubs.Personal.id())
+Livebook.Hubs.Personal.update_hub(personal_hub, %{secret_key: secret_key})
+
 erl_docs_available? = Code.fetch_docs(:gen_server) != {:error, :chunk_not_found}
 
+windows? = match?({:win32, _}, :os.type())
+
 ExUnit.start(
-  assert_receive_timeout: 1_500,
+  assert_receive_timeout: if(windows?, do: 2_500, else: 1_500),
   exclude: [
     erl_docs: erl_docs_available?,
     enterprise_integration: not Livebook.EnterpriseServer.available?()

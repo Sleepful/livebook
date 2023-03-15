@@ -33,7 +33,7 @@ defmodule Livebook.FileSystem.FileTest do
 
   describe "local/1" do
     test "uses the globally configured local file system instance" do
-      assert FileSystem.File.local(p("/path")).file_system == Livebook.Config.local_filesystem()
+      assert FileSystem.File.local(p("/path")).file_system == Livebook.Config.local_file_system()
     end
   end
 
@@ -420,6 +420,26 @@ defmodule Livebook.FileSystem.FileTest do
       path = Path.join(tmp_dir, "dir/nonexistent.txt")
       file = FileSystem.File.local(path)
       assert {:ok, false} = FileSystem.File.exists?(file)
+    end
+  end
+
+  describe "ensure_extension/2" do
+    test "adds extension to the name" do
+      file = FileSystem.File.local(p("/file"))
+
+      assert %{path: p("/file.txt")} = FileSystem.File.ensure_extension(file, ".txt")
+    end
+
+    test "keeps the name unchanged if it already has the given extension" do
+      file = FileSystem.File.local(p("/file.txt"))
+
+      assert %{path: p("/file.txt")} = FileSystem.File.ensure_extension(file, ".txt")
+    end
+
+    test "given a directory changes path to empty file name with the given extension" do
+      dir = FileSystem.File.local(p("/dir/"))
+
+      assert %{path: p("/dir/.txt")} = FileSystem.File.ensure_extension(dir, ".txt")
     end
   end
 end
